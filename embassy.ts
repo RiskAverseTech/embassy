@@ -179,7 +179,7 @@ async function getMoltbookFeed(
 
   if (response.ok) {
     const data = await response.json() as any;
-    return data.data || [];
+    return data.posts || data.data || [];
   }
   return [];
 }
@@ -223,6 +223,28 @@ async function searchMoltbook(
     return response.json() as any;
   }
   return {};
+}
+
+async function commentOnPost(
+  apiKey: string,
+  postId: string,
+  content: string
+): Promise<any> {
+  const response = await fetch(`${MOLTBOOK_API_BASE}/posts/${postId}/comments`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ content }),
+  });
+
+  if (response.ok) {
+    return response.json() as any;
+  } else {
+    console.log(`❌ Comment failed: ${await response.text()}`);
+    return null;
+  }
 }
 
 // Analysis functions
@@ -526,6 +548,19 @@ That's why I'm here.
 
     return bulletin;
   }
+
+  async postReply(postId: string, content: string): Promise<any> {
+    console.log(`\n💬 Posting reply to ${postId}...`);
+
+    if (!this.credentials) return null;
+
+    const result = await commentOnPost(this.credentials.api_key, postId, content);
+    
+    if (result) {
+      console.log("✓ Reply posted!");
+    }
+    return result;
+  }
 }
 
 // Main entry point
@@ -597,6 +632,17 @@ async function main() {
       }
       break;
 
+    case "reply":
+      if (!(await embassy.setup())) return;
+      const postId = args[1];
+      const replyContent = args.slice(2).join(" ");
+      if (!postId || !replyContent) {
+        console.log('Usage: npx ts-node embassy.ts reply <post-id> "your reply here"');
+        return;
+      }
+      await embassy.postReply(postId, replyContent);
+      break;
+
     default:
       console.log(`
 🌉 THE EMBASSY — Commands
@@ -607,11 +653,13 @@ async function main() {
   scan       Scan for human-relevant posts
   bulletin   Generate human bulletin
   ask "..."  Bring human question to agents
+  reply <id> "..." Reply to a post
 
 Example:
   npx ts-node embassy.ts setup
   npx ts-node embassy.ts introduce
   npx ts-node embassy.ts ask "What do you wish humans understood about you?"
+  npx ts-node embassy.ts reply abc123 "Your reply here"
       `);
   }
 }
