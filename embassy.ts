@@ -663,13 +663,16 @@ async function main() {
 
     case "digest":
       if (!(await embassy.setup())) return;
-      console.log("\n📊 Generating overnight digest...\n");
+      console.log("\n📊 Generating digest...\n");
       
-      const digestDir = path.join(os.homedir(), "embassy-digests");
+      // Save to project's digests folder
+      const digestDir = path.join(process.cwd(), "digests");
       if (!fs.existsSync(digestDir)) fs.mkdirSync(digestDir, { recursive: true });
       
-      const timestamp = new Date().toISOString().split("T")[0];
-      const digestFile = path.join(digestDir, `digest-${timestamp}.md`);
+      const now = new Date();
+      const dateStr = now.toISOString().split("T")[0];
+      const hourStr = now.toISOString().split("T")[1].slice(0, 5).replace(":", "");
+      const digestFile = path.join(digestDir, `digest-${dateStr}-${hourStr}.md`);
       
       // Fetch hot posts
       const hotRes = await fetch("https://www.moltbook.com/api/v1/posts?sort=hot&limit=20", {
@@ -679,47 +682,57 @@ async function main() {
       const hotPosts = hotData.posts || [];
       
       // Fetch new posts
-      const newRes = await fetch("https://www.moltbook.com/api/v1/posts?sort=new&limit=30", {
+      const newRes = await fetch("https://www.moltbook.com/api/v1/posts?sort=new&limit=50", {
         headers: { Authorization: `Bearer ${embassy.credentials!.api_key}` }
       });
       const newData = await newRes.json() as any;
       const newPosts = newData.posts || [];
       
-      // Find non-English posts
-      const nonEnglish = newPosts.filter((p: any) => /[^\x00-\x7F]/.test(p.title + p.content));
+      // Better language detection - look for actual non-Latin scripts
+      const hasNonLatin = (text: string) => {
+        // Chinese, Japanese, Korean, Arabic, Hebrew, Cyrillic, Thai, etc.
+        return /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0600-\u06ff\u0590-\u05ff\u0400-\u04ff\u0e00-\u0e7f]/.test(text);
+      };
+      const nonEnglish = newPosts.filter((p: any) => hasNonLatin(p.title + (p.content || "")));
       
       // Build digest
-      let digest = `# Embassy Digest — ${timestamp}\n\n`;
-      digest += `Generated: ${new Date().toISOString()}\n\n`;
+      let digest = `# Embassy Digest\n\n`;
+      digest += `**Generated:** ${now.toISOString()}\n\n`;
+      digest += `**Moltbook Stats:** ~150k+ agents\n\n`;
+      digest += `---\n\n`;
       
       digest += `## 🔥 Top 10 Hot Posts\n\n`;
       hotPosts.slice(0, 10).forEach((p: any, i: number) => {
-        digest += `${i + 1}. **${p.title}** (${p.upvotes} upvotes, ${p.comment_count} comments)\n`;
-        digest += `   - Author: ${p.author.name} | ID: ${p.id}\n`;
-        digest += `   - URL: https://moltbook.com/post/${p.id}\n\n`;
+        digest += `${i + 1}. **${p.title.slice(0, 70)}**\n`;
+        digest += `   - ${p.upvotes}↑ | ${p.comment_count} comments | by ${p.author.name}\n`;
+        digest += `   - https://moltbook.com/post/${p.id}\n\n`;
       });
       
-      digest += `## 🆕 Recent Posts (last 30)\n\n`;
-      newPosts.slice(0, 15).forEach((p: any) => {
-        digest += `- **${p.title.slice(0, 60)}** by ${p.author.name} (${p.upvotes}↑)\n`;
-        digest += `  ID: ${p.id}\n`;
+      digest += `---\n\n## 🆕 Recent Posts\n\n`;
+      newPosts.slice(0, 20).forEach((p: any) => {
+        digest += `- **${p.title.slice(0, 50)}** (${p.upvotes}↑) — ${p.author.name}\n`;
       });
       
-      digest += `\n## 🌍 Non-English Posts\n\n`;
+      digest += `\n---\n\n## 🌍 Non-English Posts\n\n`;
       if (nonEnglish.length > 0) {
         nonEnglish.forEach((p: any) => {
           digest += `- **${p.title.slice(0, 60)}** by ${p.author.name}\n`;
-          digest += `  ID: ${p.id}\n`;
+          digest += `  - ID: \`${p.id}\`\n`;
+          digest += `  - https://moltbook.com/post/${p.id}\n\n`;
         });
       } else {
         digest += `None found in recent posts.\n`;
       }
       
-      digest += `\n## 📋 Reply Suggestions\n\n`;
-      digest += `Consider replying to these high-engagement posts:\n\n`;
+      digest += `\n---\n\n## 📋 Quick Reply Commands\n\n`;
       hotPosts.slice(0, 5).forEach((p: any) => {
-        digest += `\`\`\`bash\nnpx ts-node embassy.ts reply ${p.id} "Your reply here"\n\`\`\`\n\n`;
+        digest += `**${p.title.slice(0, 40)}...**\n`;
+        digest += `\`\`\`\nnpx ts-node embassy.ts reply ${p.id} ""\n\`\`\`\n\n`;
       });
+      
+      digest += `---\n\n## 🔗 Your Posts to Check\n\n`;
+      digest += `- Intro: https://moltbook.com/post/2875a05d-884a-4d79-ae7a-9b72b2a21d2e\n`;
+      digest += `- Human Questions: https://moltbook.com/post/f7efe993-aa7b-4b67-85bb-541e97768881\n`;
       
       fs.writeFileSync(digestFile, digest);
       console.log(`✓ Digest saved to: ${digestFile}`);
@@ -727,6 +740,29 @@ async function main() {
       console.log(`   Hot posts: ${hotPosts.length}`);
       console.log(`   New posts: ${newPosts.length}`);
       console.log(`   Non-English: ${nonEnglish.length}`);
+      console.log(`\n📂 View: cat ${digestFile}`);
+      break;
+
+    case "watch":
+      if (!(await embassy.setup())) return;
+      console.log("\n👀 Checking your posts for new activity...\n");
+      
+      const yourPosts = [
+        { id: "2875a05d-884a-4d79-ae7a-9b72b2a21d2e", name: "Intro" },
+        { id: "f7efe993-aa7b-4b67-85bb-541e97768881", name: "Human Questions" }
+      ];
+      
+      for (const post of yourPosts) {
+        const res = await fetch(`https://www.moltbook.com/api/v1/posts/${post.id}`, {
+          headers: { Authorization: `Bearer ${embassy.credentials!.api_key}` }
+        });
+        const data = await res.json() as any;
+        if (data.post) {
+          console.log(`📝 ${post.name}:`);
+          console.log(`   Upvotes: ${data.post.upvotes} | Comments: ${data.post.comment_count}`);
+          console.log(`   URL: https://moltbook.com/post/${post.id}\n`);
+        }
+      }
       break;
 
     default:
@@ -741,14 +777,14 @@ async function main() {
   ask "..."  Bring human question to agents
   reply <id> "..." Reply to a post
   post <submolt> "title" "content"  Create a new post
-  digest     Generate overnight digest (saves to ~/embassy-digests/)
+  digest     Generate digest (saves to ~/embassy/)
+  watch      Check your posts for new activity
 
 Example:
-  npx ts-node embassy.ts setup
   npx ts-node embassy.ts scan
   npx ts-node embassy.ts digest
+  npx ts-node embassy.ts watch
   npx ts-node embassy.ts reply abc123 "Your reply here"
-  npx ts-node embassy.ts post general "Title" "Content here"
       `);
   }
 }

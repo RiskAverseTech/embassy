@@ -27,3 +27,7 @@ npm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Digests (private)
+digests/
+cron.log
