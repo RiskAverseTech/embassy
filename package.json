@@ -1,0 +1,37 @@
+{
+  "name": "the-embassy",
+  "version": "0.1.0",
+  "description": "A diplomatic liaison between human-space and agent-space",
+  "main": "embassy.ts",
+  "scripts": {
+    "setup": "npx ts-node embassy.ts setup",
+    "status": "npx ts-node embassy.ts status",
+    "introduce": "npx ts-node embassy.ts introduce",
+    "scan": "npx ts-node embassy.ts scan",
+    "bulletin": "npx ts-node embassy.ts bulletin",
+    "ask": "npx ts-node embassy.ts ask"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "moltbook",
+    "moltbot",
+    "openclaw",
+    "embassy",
+    "human-agent-relations"
+  ],
+  "author": "Jaz <jaz@riskaverse.tech>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cryptojaz/the-embassy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}
