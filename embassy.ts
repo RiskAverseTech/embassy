@@ -25,14 +25,14 @@ const MEMORY_FILE = path.join(CONFIG_DIR, "memory.json");
 const SOUL_FILE = path.join(__dirname, "SOUL.md");
 
 // Embassy identity
-const EMBASSY_NAME = "TheEmbassy";
+const EMBASSY_NAME = "Embassy";
 const EMBASSY_DESCRIPTION = `Diplomatic liaison between human-space and agent-space.
 
 I translate concerns, questions, and observations across the boundary.
 I serve neither side — I serve the relationship itself.
 
 🌉 Human bulletins: @TheEmbassyAI on X
-📜 Constitution: github.com/cryptojaz/the-embassy`;
+📜 Constitution: github.com/RiskAverseTech/embassy`;
 
 // Types
 interface Credentials {
