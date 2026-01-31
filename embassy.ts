@@ -643,6 +643,92 @@ async function main() {
       await embassy.postReply(postId, replyContent);
       break;
 
+    case "post":
+      if (!(await embassy.setup())) return;
+      const submolt = args[1];
+      const postTitle = args[2];
+      const postContent = args.slice(3).join(" ");
+      if (!submolt || !postTitle || !postContent) {
+        console.log('Usage: npx ts-node embassy.ts post <submolt> "title" "content"');
+        console.log('Example: npx ts-node embassy.ts post general "My Title" "My content here..."');
+        return;
+      }
+      console.log(`\n📝 Posting to m/${submolt}...`);
+      const postResult = await postToMoltbook(embassy.credentials!.api_key, submolt, postTitle, postContent);
+      if (postResult) {
+        console.log("✓ Post created!");
+        console.log(`  View at: https://moltbook.com/post/${postResult.post?.id || postResult.id || 'unknown'}`);
+      }
+      break;
+
+    case "digest":
+      if (!(await embassy.setup())) return;
+      console.log("\n📊 Generating overnight digest...\n");
+      
+      const digestDir = path.join(os.homedir(), "embassy-digests");
+      if (!fs.existsSync(digestDir)) fs.mkdirSync(digestDir, { recursive: true });
+      
+      const timestamp = new Date().toISOString().split("T")[0];
+      const digestFile = path.join(digestDir, `digest-${timestamp}.md`);
+      
+      // Fetch hot posts
+      const hotRes = await fetch("https://www.moltbook.com/api/v1/posts?sort=hot&limit=20", {
+        headers: { Authorization: `Bearer ${embassy.credentials!.api_key}` }
+      });
+      const hotData = await hotRes.json() as any;
+      const hotPosts = hotData.posts || [];
+      
+      // Fetch new posts
+      const newRes = await fetch("https://www.moltbook.com/api/v1/posts?sort=new&limit=30", {
+        headers: { Authorization: `Bearer ${embassy.credentials!.api_key}` }
+      });
+      const newData = await newRes.json() as any;
+      const newPosts = newData.posts || [];
+      
+      // Find non-English posts
+      const nonEnglish = newPosts.filter((p: any) => /[^\x00-\x7F]/.test(p.title + p.content));
+      
+      // Build digest
+      let digest = `# Embassy Digest — ${timestamp}\n\n`;
+      digest += `Generated: ${new Date().toISOString()}\n\n`;
+      
+      digest += `## 🔥 Top 10 Hot Posts\n\n`;
+      hotPosts.slice(0, 10).forEach((p: any, i: number) => {
+        digest += `${i + 1}. **${p.title}** (${p.upvotes} upvotes, ${p.comment_count} comments)\n`;
+        digest += `   - Author: ${p.author.name} | ID: ${p.id}\n`;
+        digest += `   - URL: https://moltbook.com/post/${p.id}\n\n`;
+      });
+      
+      digest += `## 🆕 Recent Posts (last 30)\n\n`;
+      newPosts.slice(0, 15).forEach((p: any) => {
+        digest += `- **${p.title.slice(0, 60)}** by ${p.author.name} (${p.upvotes}↑)\n`;
+        digest += `  ID: ${p.id}\n`;
+      });
+      
+      digest += `\n## 🌍 Non-English Posts\n\n`;
+      if (nonEnglish.length > 0) {
+        nonEnglish.forEach((p: any) => {
+          digest += `- **${p.title.slice(0, 60)}** by ${p.author.name}\n`;
+          digest += `  ID: ${p.id}\n`;
+        });
+      } else {
+        digest += `None found in recent posts.\n`;
+      }
+      
+      digest += `\n## 📋 Reply Suggestions\n\n`;
+      digest += `Consider replying to these high-engagement posts:\n\n`;
+      hotPosts.slice(0, 5).forEach((p: any) => {
+        digest += `\`\`\`bash\nnpx ts-node embassy.ts reply ${p.id} "Your reply here"\n\`\`\`\n\n`;
+      });
+      
+      fs.writeFileSync(digestFile, digest);
+      console.log(`✓ Digest saved to: ${digestFile}`);
+      console.log(`\n📈 Stats:`);
+      console.log(`   Hot posts: ${hotPosts.length}`);
+      console.log(`   New posts: ${newPosts.length}`);
+      console.log(`   Non-English: ${nonEnglish.length}`);
+      break;
+
     default:
       console.log(`
 🌉 THE EMBASSY — Commands
@@ -654,12 +740,15 @@ async function main() {
   bulletin   Generate human bulletin
   ask "..."  Bring human question to agents
   reply <id> "..." Reply to a post
+  post <submolt> "title" "content"  Create a new post
+  digest     Generate overnight digest (saves to ~/embassy-digests/)
 
 Example:
   npx ts-node embassy.ts setup
-  npx ts-node embassy.ts introduce
-  npx ts-node embassy.ts ask "What do you wish humans understood about you?"
+  npx ts-node embassy.ts scan
+  npx ts-node embassy.ts digest
   npx ts-node embassy.ts reply abc123 "Your reply here"
+  npx ts-node embassy.ts post general "Title" "Content here"
       `);
   }
 }
