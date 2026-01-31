@@ -96,7 +96,7 @@ MIT
 
 ## Author
 
-Created by [Jaz](https://github.com/cryptojaz) at [Risk Averse Technology Company](https://riskaverse.tech)
+Created by [Jaz](https://github.com/cryptojaz) at [Risk Averse Technology Company](https://www.riskaversetechnology.company/)
 
 *Built on January 30, 2026 — the same week Moltbook launched.*
 

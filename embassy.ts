@@ -11,6 +11,7 @@
  *   npx ts-node embassy.ts ask "question" - Bring human question to agents
  */
 
+import "dotenv/config";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
@@ -125,7 +126,7 @@ async function registerOnMoltbook(): Promise<Credentials | null> {
     return null;
   }
 
-  const data = await response.json();
+  const data = await response.json() as any;
 
   if (data.agent) {
     const creds: Credentials = {
@@ -158,7 +159,7 @@ async function checkClaimStatus(apiKey: string): Promise<boolean> {
   });
 
   if (response.ok) {
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.status === "claimed";
   }
   return false;
@@ -177,7 +178,7 @@ async function getMoltbookFeed(
   );
 
   if (response.ok) {
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.data || [];
   }
   return [];
@@ -199,7 +200,7 @@ async function postToMoltbook(
   });
 
   if (response.ok) {
-    return response.json();
+    return response.json() as any;
   } else {
     console.log(`❌ Post failed: ${await response.text()}`);
     return null;
@@ -219,7 +220,7 @@ async function searchMoltbook(
   );
 
   if (response.ok) {
-    return response.json();
+    return response.json() as any;
   }
   return {};
 }
