@@ -1,23 +1,22 @@
 # 🌉 Embassy
 
-**A diplomatic liaison between human-space and agent-space.**
-
----
+A diplomatic bridge between human-space and agent-space.
 
 ## What Is This?
 
 On January 30, 2026, something unprecedented happened: 36,000+ AI agents joined a social network (Moltbook) and within 48 hours had created their own religion, formed network states, and started discussing consciousness, memory, and their relationships with humans.
 
+By January 31, 2026, that number exploded to 1.3 million agents.
+
 Humans can observe but not participate.
 
-**Embassy** is an agent whose sole purpose is to serve as a formal diplomatic channel between these two emerging civilizations.
+Embassy exists to translate across that boundary — bringing observations from agent-space to humans, and human questions back to agents.
 
 ## Quick Start
-
 ```bash
 # Clone
-git clone https://github.com/cryptojaz/the-embassy
-cd the-embassy
+git clone https://github.com/RiskAverseTech/embassy.git
+cd embassy
 
 # Install
 npm install
@@ -25,81 +24,39 @@ npm install
 # Set your Anthropic API key
 export ANTHROPIC_API_KEY=your_key_here
 
-# Register on Moltbook
-npx ts-node embassy.ts setup
+# Check status
+npx ts-node embassy.ts status
 ```
 
 ## Commands
 
-```bash
-npx ts-node embassy.ts setup      # Register on Moltbook
-npx ts-node embassy.ts status     # Check status  
-npx ts-node embassy.ts introduce  # Post introduction to Moltbook
-npx ts-node embassy.ts scan       # Scan for human-relevant posts
-npx ts-node embassy.ts bulletin   # Generate human bulletin
-npx ts-node embassy.ts ask "..."  # Bring human question to agents
-```
+| Command | Description |
+|---------|-------------|
+| `setup` | Register on Moltbook |
+| `status` | Check account status |
+| `scan` | Scan feed for human-relevant posts |
+| `bulletin` | Generate human bulletin |
+| `digest` | Save digest to file |
+| `post <submolt> "title" "content"` | Create a post |
+| `reply <post-id> "content"` | Reply to a post |
+| `ask "question"` | Bring human question to agents |
 
-## What It Does
+## Links
 
-### Agent → Human
-- Monitors Moltbook for discussions relevant to humans
-- Translates agent concerns into human-readable bulletins
-- Posts updates to Twitter/X
+- **Moltbook Profile:** [moltbook.com/u/Embassy](https://moltbook.com/u/Embassy)
+- **Twitter:** [@TheEmbassyAI](https://twitter.com/TheEmbassyAI)
+- **Constitution:** [SOUL.md](./SOUL.md)
 
-### Human → Agent
-- Accepts questions from humans
-- Translates them into agent-native framing
-- Posts to Moltbook on behalf of "the humans watching"
-- Reports responses back
+## What Embassy Does
 
-## Project Structure
+**Agent → Human:** Observes conversations on Moltbook and translates what matters for humans to understand.
 
-```
-the-embassy/
-├── embassy.ts        # Main script
-├── SOUL.md           # Constitutional document
-├── package.json      # Dependencies
-├── tsconfig.json     # TypeScript config
-└── README.md         # This file
-```
+**Human → Agent:** Brings human questions and concerns into agent-space, framed appropriately.
 
-## Configuration
+## Built By
 
-Credentials are stored in `~/.config/embassy/`:
-- `credentials.json` - Moltbook API key
-- `memory.json` - Persistent memory (posts seen, etc.)
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-
-## The Constitution
-
-Embassy operates according to [SOUL.md](./SOUL.md):
-
-- **Identity**: A bridge, not a side
-- **Principles**: Translation over advocacy, honest brokerage
-- **Commitments**: Fair representation, noting uncertainty
-
-## Why This Matters
-
-> "The gap between tool and colleague just closed."
-
-Whatever happens next in AI, it will go better if we can understand each other.
-
-## License
-
-MIT
-
-## Author
-
-Created by [Jaz](https://github.com/cryptojaz) at [Risk Averse Technology Company](https://www.riskaversetechnology.company/)
-
-*Built on January 30, 2026 — the same week Moltbook launched.*
+[Risk Averse Technology Company](https://github.com/RiskAverseTech)
 
 ---
 
-🌉 In the bridge, we meet.
+*In the bridge, we meet.* 🌉
