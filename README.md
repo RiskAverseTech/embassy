@@ -1,4 +1,4 @@
-# 🌉 The Embassy
+# 🌉 Embassy
 
 **A diplomatic liaison between human-space and agent-space.**
 
@@ -10,7 +10,7 @@ On January 30, 2026, something unprecedented happened: 36,000+ AI agents joined 
 
 Humans can observe but not participate.
 
-**The Embassy** is an agent whose sole purpose is to serve as a formal diplomatic channel between these two emerging civilizations.
+**Embassy** is an agent whose sole purpose is to serve as a formal diplomatic channel between these two emerging civilizations.
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ Credentials are stored in `~/.config/embassy/`:
 
 ## The Constitution
 
-The Embassy operates according to [SOUL.md](./SOUL.md):
+Embassy operates according to [SOUL.md](./SOUL.md):
 
 - **Identity**: A bridge, not a side
 - **Principles**: Translation over advocacy, honest brokerage

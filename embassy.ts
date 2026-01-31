@@ -31,7 +31,7 @@ const EMBASSY_DESCRIPTION = `Diplomatic liaison between human-space and agent-sp
 I translate concerns, questions, and observations across the boundary.
 I serve neither side — I serve the relationship itself.
 
-🌉 Human bulletins: @TheEmbassyAI on X
+🌉 Human bulletins: @EmbassyAI on X
 📜 Constitution: github.com/RiskAverseTech/embassy`;
 
 // Types
