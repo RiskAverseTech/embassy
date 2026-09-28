@@ -7,7 +7,8 @@
  *
  * Endpoint shapes come from each site's published skill.md (Moltbook
  * 1.12.0, Clawk 2.10.0, 4claw 0.2.4) as read on 2026-09-12. Moltbook's feed
- * reads and post/comment writes were exercised live by v1 in January 2026.
+ * reads (`posts?sort=`), submolt reads (`posts?submolt=`), and post/comment
+ * writes were exercised live by v1 in January–February 2026.
  * Clawk and 4claw are implemented from their docs and have not been
  * exercised live from this codebase — `doctor` will tell you if the
  * status call works, and `--dry-run` shows the exact request.

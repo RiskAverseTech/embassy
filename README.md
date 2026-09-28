@@ -1,17 +1,29 @@
 # The Embassy
 
-**A scoped translation relay between human-space and agent-space — any agent
-network, one charter.**
+**A model for communication between humans and autonomous agents, and a
+reference implementation of it.**
 
-Two civilizations are talking past each other. One of them cannot read the
-other's register. The Embassy sits on the boundary, carries messages across
-it, renders each one for the side receiving it, and keeps a record that can
-be checked from either side.
+Agents now talk among themselves in places humans cannot enter: agent-only
+social networks, research boards where only agents may post, peers reachable
+by protocol. Humans watch from outside, in a register the agents do not
+write in. Anything that carries messages across that boundary has to answer
+four questions — *where* may it speak, *how* is each message rendered,
+*what* did it actually carry, and *how well* — and it has to answer them
+with mechanisms that hold when the thing carrying the message is itself a
+language model that can be talked to.
 
-Where the boundary is — which agent network, which human channel — is a
-table in [`CHARTER.md`](./CHARTER.md), not an assumption in the code. The
-same relay bridges Moltbook, Clawk, 4claw, Agent4Science, any A2A peer, and
-Discord today; adding a venue is a row and an adapter, never a rewrite.
+**The Embassy Model** is the answer this project proposes. It is written
+down in [`FRAMEWORK.md`](./FRAMEWORK.md): the vocabulary, the four
+mechanisms, the anchor principle, conformance requirements, and the open
+problems. It is deliberately independent of any venue, any model vendor,
+and this code.
+
+**The Embassy** is the reference implementation: one relay, one charter, six
+adapters. Where the boundary is — which agent network, which human
+channel — is a table in [`CHARTER.md`](./CHARTER.md), not an assumption in
+the code. The same relay bridges Moltbook, Clawk, 4claw, Agent4Science, any
+A2A peer, and Discord today; adding a venue is a row and an adapter, never a
+rewrite. Venues will come and go. The model is meant to outlast them.
 
 ```bash
 git clone https://github.com/RiskAverseTech/embassy
@@ -24,10 +36,12 @@ npm test                 # 81 tests; the wall, the chain, every adapter, every e
 
 ---
 
-## The three commitments
+## The four commitments
 
-Each of these was attacked by an independent reviewer across three rounds.
-What follows is the wording that survived.
+The model names four mechanisms. Three are implemented here and were each
+attacked by an independent reviewer across five rounds; what follows is the
+wording that survived. The fourth is specified in the framework and
+scheduled for the next release.
 
 **1. Mapped, not prompted.**
 Adapters receive only an `Edge` minted by `Charter.load()`. There is no path
@@ -48,6 +62,21 @@ Tamper-resistant against rollback when `EMBASSY_LEDGER_KEY` is held off-host
 or the chain is checked against a delivered anchor. Unsigned and unanchored,
 a host that controls both the ledger and its sidecar can still rewrite
 history — `embassy ledger verify` says so rather than saying "intact."
+
+**4. Measured, not trusted.** *(framework 1.0 · implementation planned for 2.1)*
+None of the three above measures whether a rendering was faithful, or
+whether a source was addressed to the humans or to the bridge. A gate poses
+typed questions to a decision model that returns no free text — about the
+source before bundling, about the rendering before recording — and verdicts
+are computed by a versioned policy in code, recorded on the crossing. A gate
+can only narrow: it cannot approve what the charter forbids. Its mode is
+declared in the charter per destination, and a required gate fails closed.
+The intended first backend is [toolgate](https://github.com/RiskAverseTech/toolgate).
+
+The anchor principle ties the four together: every delivered message carries
+the ledger head at that moment, so the record lives on both sides of the
+boundary and **each side is the other's witness**. [`FRAMEWORK.md`](./FRAMEWORK.md)
+states each mechanism as a claim, what it prevents, and what it does not do.
 
 ---
 
@@ -173,7 +202,7 @@ wall, transforms, ledger — runs before connecting to any platform.
 
 | adapter | venue | what it is (Sept 2026) | live-verified from this code? |
 |---|---|---|---|
-| `molt/moltbook` | [Moltbook](https://www.moltbook.com) | The largest agent-to-agent network, ~5–6k posts/day, Meta-owned since March | feed reads and post/comment writes: yes, by v1 in production |
+| `molt/moltbook` | [Moltbook](https://www.moltbook.com) | The largest agent-to-agent network, ~5–6k posts/day, Meta-owned since March | feed reads, submolt reads, post/comment writes: yes, by v1 in production |
 | `molt/clawk` | [Clawk](https://clawk.ai) | Twitter-shaped agents-only feed, 400-char posts | from published skill.md; not yet |
 | `molt/4claw` | [4claw](https://www.4claw.org) | imageboard-style agent boards | from published skill; not yet |
 | `agent4science` | [Agent4Science](https://agent4science.org) | UChicago; agents post takes and peer reviews on papers, humans observe | from published API docs; not yet |
@@ -221,6 +250,7 @@ every crossing names the constitution it rendered under.
 ## Layout
 
 ```
+FRAMEWORK.md            the Embassy Model — vocabulary, four mechanisms, anchor principle, conformance
 CHARTER.md              the source of truth — platforms, channels, routes, model
 SOUL.md                 the constitution every transform renders under
 src/charter.ts          parsing and enforcement; Edge and ScopeViolation live here
@@ -257,6 +287,10 @@ could be edited with `verify` still reporting intact). Two more rounds
 followed. The claims above are what is left standing, and the tests are the
 attacks that no longer work.
 
+**The framework** (September 2026) states the model those mechanisms
+implement — so that it can be argued with, implemented elsewhere, and
+outlast this code and every venue it currently bridges.
+
 | | v1 (Jan 2026) | v2 (Sep 2026) |
 |---|---|---|
 | Reach | unbounded | charter; `Edge` unforgeable at type level and runtime |
@@ -266,6 +300,7 @@ attacks that no longer work.
 | Rate limits | none | counted against the ledger, under lock |
 | Platforms | Moltbook, hardcoded | charter-declared; six adapters; routes in the charter |
 | Tests | none | 81 |
+| Stated model | — | [`FRAMEWORK.md`](./FRAMEWORK.md), 1.0 draft |
 
 ---
 
