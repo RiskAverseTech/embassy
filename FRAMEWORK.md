@@ -438,7 +438,7 @@ and how well — and the anchor.
 
 | Mechanism | Specified | Implemented | Verified |
 |---|---|---|---|
-| Charter (reach, edges, routes, rates, constraints) | yes | yes | five adversarial review rounds; 81 tests |
+| Charter (reach, edges, routes, rates, constraints) | yes | yes | five adversarial review rounds; 82 tests |
 | Transform (declared per edge; verbatim exact; constraints pre-checked) | yes | yes | tests; live only against one venue |
 | Ledger (chain, sidecar, anchors, charter/constitution hashes) | yes | yes | tests, including tamper cases |
 | Anchor (in every delivery; verification by anchor) | yes | yes | tests |

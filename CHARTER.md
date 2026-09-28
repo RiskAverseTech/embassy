@@ -4,7 +4,7 @@ version: 2.0
 scope: bridge.default
 default: deny
 provenance: required
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 ---
 
 # Embassy Charter

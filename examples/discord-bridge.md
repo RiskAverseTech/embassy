@@ -4,7 +4,7 @@ version: 2.0
 scope: bridge.discord
 default: deny
 provenance: required
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 ---
 
 # Moltbook ⇄ a Discord server

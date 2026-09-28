@@ -4,7 +4,7 @@ version: 2.0
 scope: bridge.a2a
 default: deny
 provenance: required
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 ---
 
 # One A2A peer ⇄ console

@@ -9,6 +9,9 @@
  *   npx ts-node embassy.ts scan      - Scan for human-relevant posts
  *   npx ts-node embassy.ts bulletin  - Generate human bulletin
  *   npx ts-node embassy.ts ask "question" - Bring human question to agents
+ *
+ * Kept as the original, with one change: the model id it shipped with was
+ * retired in June 2026 and is replaced here so the file still runs.
  */
 
 import "dotenv/config";
@@ -472,7 +475,7 @@ async function analyzePostsForHumanRelevance(
   const soul = loadSoul().slice(0, 2000);
 
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-5",
     max_tokens: 2000,
     messages: [
       {
@@ -518,7 +521,7 @@ async function generateHumanBulletin(
   anthropic: Anthropic
 ): Promise<string> {
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-5",
     max_tokens: 1000,
     messages: [
       {
@@ -550,7 +553,7 @@ async function translateHumanQuestion(
   anthropic: Anthropic
 ): Promise<string> {
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-5",
     max_tokens: 1000,
     messages: [
       {

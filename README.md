@@ -31,7 +31,7 @@ cd embassy
 npm install
 npm run charter          # platforms, channels, routes — and whether each channel parses
 npm run doctor           # constitution, key, ledger chain, every platform's live health
-npm test                 # 81 tests; the wall, the chain, every adapter, every example charter
+npm test                 # 82 tests; the wall, the chain, every adapter, every example charter
 ```
 
 ---
@@ -188,21 +188,25 @@ records and delivers nothing.
 
 ```bash
 export ANTHROPIC_API_KEY=...                    # or .env
+npm run embassy -- run bulletin --dry-run       # reads the public feed, renders, delivers nothing
+npm run embassy -- run bulletin                 # same, delivered to the console outbox and recorded
+npm run embassy -- register moltbook            # only needed to *post*: registers, prints the claim code
 export EMBASSY_LEDGER_KEY=...                   # optional; keep it off the delivery host
-npm run embassy -- register moltbook            # registers, prints the claim code to post from X
 npm run embassy -- doctor                       # every platform's live status
-npm run embassy -- run bulletin --dry-run       # render, deliver nothing
 ```
 
-Credentials live per platform alias in `~/.config/embassy/credentials/`,
-mode 0600. The `console` adapter needs none, so the full relay — charter,
-wall, transforms, ledger — runs before connecting to any platform.
+The default `bulletin` route needs no platform credentials at all: Moltbook
+serves its feed and submolt reads publicly, and the `console` adapter needs
+nothing. The full relay — charter, wall, transform, ledger, anchor — runs
+end to end with one model key. Registering is for the `ask` direction, which
+posts. Credentials live per platform alias in
+`~/.config/embassy/credentials/`, mode 0600.
 
 ## Venues
 
 | adapter | venue | what it is (Sept 2026) | live-verified from this code? |
 |---|---|---|---|
-| `molt/moltbook` | [Moltbook](https://www.moltbook.com) | The largest agent-to-agent network, ~5–6k posts/day, Meta-owned since March | feed reads, submolt reads, post/comment writes: yes, by v1 in production |
+| `molt/moltbook` | [Moltbook](https://www.moltbook.com) | The largest agent-to-agent network, ~5–6k posts/day, Meta-owned since March | feed and submolt reads (public, no key): yes, re-checked after the acquisition; post/comment writes: yes, by v1 in production |
 | `molt/clawk` | [Clawk](https://clawk.ai) | Twitter-shaped agents-only feed, 400-char posts | from published skill.md; not yet |
 | `molt/4claw` | [4claw](https://www.4claw.org) | imageboard-style agent boards | from published skill; not yet |
 | `agent4science` | [Agent4Science](https://agent4science.org) | UChicago; agents post takes and peer reviews on papers, humans observe | from published API docs; not yet |
@@ -264,7 +268,7 @@ src/fences.ts           CommonMark fence tracking shared by the charter parser a
 examples/               a ready CHARTER.md per venue; all load and lint in the test suite
 src/wall.test.ts        45 tests: the wall, the parser, platforms, routes, the chain
 src/relay.test.ts       16 tests: ordering, rate races, retry, verbatim fidelity, routes, length refusal
-src/adapters.test.ts    20 tests: every adapter against recorded shapes; A2A origin bypasses; a live local A2A server
+src/adapters.test.ts    21 tests: every adapter against recorded shapes; A2A origin bypasses; a live local A2A server
 legacy/embassy-v1.ts    the original, kept runnable: npm run v1
 ```
 
@@ -299,7 +303,7 @@ outlast this code and every venue it currently bridges.
 | Audit trail | none | hash chain + sidecar + anchors in delivered messages |
 | Rate limits | none | counted against the ledger, under lock |
 | Platforms | Moltbook, hardcoded | charter-declared; six adapters; routes in the charter |
-| Tests | none | 81 |
+| Tests | none | 82 |
 | Stated model | — | [`FRAMEWORK.md`](./FRAMEWORK.md), 1.0 draft |
 
 ---

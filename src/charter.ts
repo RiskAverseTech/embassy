@@ -88,7 +88,7 @@ export class CharterError extends Error {
 const ROLES: Role[] = ["listen", "speak", "report", "both"];
 const DIRECTIONS: Direction[] = ["in", "out", "both"];
 const CHARTER_MAJOR = 2;
-const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL = "claude-sonnet-5";
 
 /**
  * An Edge is a capability: holding one is what lets code address a channel.

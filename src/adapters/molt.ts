@@ -8,7 +8,9 @@
  * Endpoint shapes come from each site's published skill.md (Moltbook
  * 1.12.0, Clawk 2.10.0, 4claw 0.2.4) as read on 2026-09-12. Moltbook's feed
  * reads (`posts?sort=`), submolt reads (`posts?submolt=`), and post/comment
- * writes were exercised live by v1 in January–February 2026.
+ * writes were exercised live by v1 in January–February 2026; both reads were
+ * confirmed public (no key) on 2026-09-28, after the site changed hands, so
+ * a fresh install can run a read-only route before registering.
  * Clawk and 4claw are implemented from their docs and have not been
  * exercised live from this codebase — `doctor` will tell you if the
  * status call works, and `--dry-run` shows the exact request.
@@ -31,7 +33,8 @@ import {
 } from "./types";
 import { saveCredentials } from "../credentials";
 
-type ReadPlan = { path: string; query: Record<string, string>; extract: (json: any) => any[] };
+/** `public: true` means the site serves this read without a key (verified live); the adapter then reads anonymously when none is configured. */
+type ReadPlan = { path: string; query: Record<string, string>; extract: (json: any) => any[]; public?: boolean };
 type WritePlan = { path: string; body: (title: string, content: string) => Record<string, unknown>; idFrom: (json: any) => string | undefined };
 type ReplyPlan = { path: (id: string) => string; body: (content: string) => Record<string, unknown> };
 
@@ -72,9 +75,9 @@ const DIALECTS: Record<string, Dialect> = {
     status: { path: "/agents/status", ok: (j) => j?.status === "claimed" },
     read: (channel): ReadPlan | null => {
       const feed = channel.match(/^posts\?sort=(hot|new|top|rising)$/);
-      if (feed) return { path: "/posts", query: { sort: feed[1] }, extract: (j) => first(j, ["posts", "data"]) };
+      if (feed) return { path: "/posts", query: { sort: feed[1] }, extract: (j) => first(j, ["posts", "data"]), public: true };
       const sub = channel.match(new RegExp(`^m/(${SLUG})$`, "i"));
-      if (sub) return { path: "/posts", query: { submolt: sub[1], sort: "new" }, extract: (j) => first(j, ["posts", "data"]) };
+      if (sub) return { path: "/posts", query: { submolt: sub[1], sort: "new" }, extract: (j) => first(j, ["posts", "data"]), public: true };
       return null;
     },
     write: (channel) => {
@@ -236,6 +239,12 @@ export class MoltAdapter implements Adapter {
     return { Authorization: `Bearer ${this.#key}`, ...this.#d.headers };
   }
 
+  /** Public reads go out without a key when none is configured; with one, it is sent (the site may personalise or rate-limit by it). */
+  #authFor(plan: ReadPlan): Record<string, string> {
+    if (this.#key || !plan.public) return this.#auth();
+    return { ...this.#d.headers };
+  }
+
   #url(path: string, query: Record<string, string> = {}): string {
     const u = new URL(this.#base + path);
     for (const [k, v] of Object.entries(query)) u.searchParams.set(k, v);
@@ -246,7 +255,7 @@ export class MoltAdapter implements Adapter {
     requireEdge(edge, this.platform);
     const plan = this.#d.read(edge.channel);
     if (!plan) throw new AdapterError(`${this.kind}: channel '${edge.channel}' is not readable — see the dialect's grammar`);
-    const json = await callJson(this.#fetch, this.#url(plan.path, { ...plan.query, limit: String(limit) }), { headers: this.#auth() });
+    const json = await callJson(this.#fetch, this.#url(plan.path, { ...plan.query, limit: String(limit) }), { headers: this.#authFor(plan) });
     return plan.extract(json).map((raw) => this.#d.item(raw, this.#site, edge.channel)).filter((m): m is InboundMessage => m !== null);
   }
 

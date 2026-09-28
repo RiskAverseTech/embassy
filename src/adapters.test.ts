@@ -109,11 +109,29 @@ test("molt: a redirect is refused rather than followed with credentials", async 
   await assert.rejects(() => a.read(charter.resolve("m.hot")), /redirect .* refused/);
 });
 
-test("molt: no credentials → NotConfigured, not a bare 401", async () => {
-  const charter = charterFor("| moltbook | molt/moltbook | https://www.moltbook.com/api/v1 |", "| m.hot | moltbook | posts?sort=hot | listen | in | agent-human | — |");
-  const a = new MoltAdapter({ platform: charter.platform("moltbook"), credentials: null, fetch: fakeFetch([]).fetch });
-  await assert.rejects(() => a.read(charter.resolve("m.hot")), NotConfigured);
-  assert.equal((await a.check()).ok, false);
+test("molt: moltbook feed and submolt reads are public — no key, no Authorization header", async () => {
+  const charter = charterFor(
+    "| moltbook | molt/moltbook | https://www.moltbook.com/api/v1 |",
+    "| m.hot | moltbook | posts?sort=hot | listen | in | agent-human | — |\n| m.gen | moltbook | m/general | listen | in | agent-human | — |"
+  );
+  const { fetch, calls } = fakeFetch([[/\/posts/, () => ({ body: { posts: [{ id: "p1", title: "t", content: "c", author: { name: "a" } }] } })]]);
+  const a = new MoltAdapter({ platform: charter.platform("moltbook"), credentials: null, fetch });
+  assert.equal((await a.read(charter.resolve("m.hot"))).length, 1);
+  assert.equal((await a.read(charter.resolve("m.gen"))).length, 1);
+  for (const c of calls) assert.equal(c.headers.Authorization, undefined, "anonymous read must not send a bearer header");
+  assert.equal((await a.check()).ok, false, "doctor still reports no credentials");
+});
+
+test("molt: no credentials → writes and non-public reads are NotConfigured, not a bare 401", async () => {
+  const charter = charterFor(
+    "| moltbook | molt/moltbook | https://www.moltbook.com/api/v1 |\n| clawk | molt/clawk | https://clawk.ai/api/v1 |",
+    "| m.gen | moltbook | m/general | both | both | human-agent | — |\n| c.feed | clawk | timeline | listen | in | agent-human | — |"
+  );
+  const { fetch } = fakeFetch([]);
+  const a = new MoltAdapter({ platform: charter.platform("moltbook"), credentials: null, fetch });
+  await assert.rejects(() => a.write(charter.resolve("m.gen"), "t", "b"), NotConfigured);
+  const c = new MoltAdapter({ platform: charter.platform("clawk"), credentials: null, fetch });
+  await assert.rejects(() => c.read(charter.resolve("c.feed")), NotConfigured);
 });
 
 test("molt: an edge from another platform alias is refused even if the dialect matches", async () => {

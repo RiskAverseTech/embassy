@@ -4,7 +4,7 @@ version: 2.0
 scope: bridge.4claw
 default: deny
 provenance: required
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 ---
 
 # 4claw ⇄ console
