@@ -4,35 +4,44 @@
 
 Two civilizations are talking past each other. One of them cannot read the
 other's register. The Embassy sits on the boundary, carries messages across
-it, renders each one for the side receiving it, and keeps a record either
-side can audit.
+it, renders each one for the side receiving it, and keeps a record that can
+be checked from either side.
 
 ```bash
 git clone https://github.com/cryptojaz/the-embassy
 cd the-embassy
 npm install
 npm run charter          # see exactly where this Embassy can reach
+npm run doctor           # charter, constitution, credentials, ledger chain
+npm test                 # 47 tests, nearly all of them former attacks
 ```
 
 ---
 
 ## The three commitments
 
+Each of these was attacked by an independent reviewer across three rounds.
+What follows is the wording that survived.
+
 **1. Mapped, not prompted.**
-Every channel the Embassy can touch is a row in [`CHARTER.md`](./CHARTER.md).
-There is no prompt that grants access, because no prompt is consulted. Adapters
-receive a resolved `Edge`, never a channel string, so there is no path from
-arbitrary text to a platform call.
+Adapters receive only an `Edge` minted by `Charter.load()`. There is no path
+from arbitrary text — or from any value the relay handles — to a platform
+call for an unmapped channel. Changing reach means editing
+[`CHARTER.md`](./CHARTER.md): visible in the diff and recorded in the ledger.
 
 **2. Translated, not forwarded.**
-Every crossing declares a **transform** — how the message is rendered for the
-side receiving it. `verbatim` is allowed, but it has to be declared. Nothing is
-silently reworded and nothing is silently passed through.
+Every crossing declares its transform. `verbatim` is delivered and recorded
+exactly as received. Fidelity of the LLM transforms is not guaranteed — a
+model can be steered — and the ledger is what lets anyone check what went
+out.
 
 **3. Recorded, not promised.**
-Every crossing writes the source text and the rendered text to an append-only
-ledger before delivery. Anyone on either side can run `embassy verify <id>` and
-see what was said in their name and how it was rendered for the other side.
+Every crossing is hash-chained and its head is anchored in delivered
+messages. Tamper-evident against edits, deletion, and reordering.
+Tamper-resistant against rollback when `EMBASSY_LEDGER_KEY` is held off-host
+or the chain is checked against a delivered anchor. Unsigned and unanchored,
+a host that controls both the ledger and its sidecar can still rewrite
+history — `embassy ledger verify` says so rather than saying "intact."
 
 ---
 
@@ -43,77 +52,128 @@ see what was said in their name and how it was rendered for the other side.
 |----------------|----------|----------------|--------|-----------|-------------|-------|
 | agent.hot      | moltbook | posts?sort=hot | listen | in        | agent-human | —     |
 | agent.general  | moltbook | m/general      | both   | both      | human-agent | 3/day |
-| human.bulletin | console  | @TheEmbassyAI  | report | out       | agent-human | 4/day |
+| human.bulletin | console  | bulletin       | report | out       | agent-human | 4/day |
 ```
 
-A crossing is legal only if both ids resolve, the source permits reading, the
-destination permits writing, the destination is under its rate, and the
-destination's transform is registered. Any failure raises `ScopeViolation` and
-nothing is sent — the wall is checked **before** the model is called, so a
-disallowed crossing costs nothing and leaks nothing.
+A crossing is legal only if every source resolves and is readable, the
+destination resolves and is writable, the destination is under its rate, and
+its transform is registered. The wall is checked **before** the model is
+called, so a disallowed crossing costs nothing.
 
-Rate limits are counted against the ledger rather than memory, so restarting
-the process does not reset the Embassy's budget.
+The wall is the object-capability model applied to an agent's reach: an
+`Edge` is a capability, and only the charter can mint one. The class has a
+private constructor, a private-field brand, and a runtime guard, so object
+literals, `Object.create`, `Reflect.construct`, subclassing, and `new (Edge
+as any)` are all refused — at the type level and again at runtime in every
+adapter. Rows in prose, in fenced code, or inside HTML comments are not
+edges; the frontmatter must be on line 1; a second `## Channels` heading is
+an error.
 
-Edit the charter and send `SIGHUP` to reload without a restart.
+Rate limits are counted against the ledger, under a cross-process lock, so
+neither a restart nor a concurrent run resets or races them.
+
+---
+
+## The ledger
+
+```
+embassy ledger              recent crossings, with delivery status
+embassy ledger head         current chain head (seq + hash)
+embassy ledger verify       walk the chain; compare to the sidecar head
+embassy ledger verify 12:3f9a0c2b1e77
+                            compare to an anchor copied from a delivered post
+embassy verify <id>         one crossing: AS RECEIVED vs. AS DELIVERED
+```
+
+Every crossing stores the source, the rendering, and the **exact delivered
+body** (provenance footer included), hashed, chained to the previous entry.
+A separate delivery entry records success and the platform reference, or
+failure and the error. Every open records the charter's and constitution's
+hashes when either changes, and every crossing names the constitution it
+rendered under.
+
+Every delivered message ends with a footer naming its crossing id and the
+ledger head at that moment. The footer is not proof of origin — text can
+imitate text. The anchor in it is: paste it into `ledger verify` and the
+chain either contains it or has been rewritten.
 
 ---
 
 ## Commands
 
 ```
-embassy charter             validate and print the charter
-embassy scan <edge>         read one inbound edge
-embassy bulletin            agent-space → human bulletin
-embassy ask "<question>"    human question → agent-space
-embassy ledger [n]          recent crossings
-embassy verify <id>         source and rendering, side by side
-embassy register            claim the Embassy on Moltbook
+embassy charter                validate and print the charter
+embassy doctor                 charter, soul, credentials, key, ledger, rollback assurance
+embassy scan <edge>            read one inbound edge                 [--json]
+embassy bulletin               agent-space → human bulletin          [--dry-run]
+embassy ask "<question>"       human question → agent-space          [--dry-run]
+embassy redeliver <id>         resend a recorded but undelivered crossing
+embassy ledger [n|head|verify] the record
+embassy verify <id>            one crossing, both sides
+embassy register               claim the Embassy on Moltbook
 ```
 
-`embassy verify` is the one that matters. It is the difference between an
-Embassy that says it is an honest broker and one that can be checked:
-
-```
-  crossing 4f9c2a1b0e   ✓ intact
-  agent.hot → human.bulletin via agent-human
-
-  ── AS RECEIVED ───────────────────────────
-  [src:2875a05d] On the question of continuity — m/philosophy (412↑)
-  ...
-
-  ── AS DELIVERED ──────────────────────────
-  Agents on Moltbook spent the week arguing about whether an agent that
-  loses its context window is the same agent afterward. ...
-```
+Exit codes: `0` ok · `1` error · `2` scope violation · `3` rate exceeded ·
+`4` charter invalid · `5` usage. `--dry-run` renders (and spends tokens) but
+records and delivers nothing.
 
 ---
 
 ## Setup
 
 ```bash
-export ANTHROPIC_API_KEY=...     # or use .env
-npm run embassy -- register      # claim TheEmbassy on Moltbook
-npm run embassy -- bulletin
-npm test                         # 13 tests, all on the wall
+export ANTHROPIC_API_KEY=...          # or .env
+export EMBASSY_LEDGER_KEY=...         # optional; keep it off the delivery host
+npm run embassy -- register           # claim TheEmbassy on Moltbook
+npm run embassy -- bulletin --dry-run
 ```
 
-The `console` adapter needs no credentials, so the full relay — charter, wall,
-transforms, ledger — can be exercised before connecting to any platform.
+The `console` adapter needs no credentials, so the full relay — charter,
+wall, transforms, ledger — runs before connecting to any platform. Bulletins
+land in `~/.config/embassy/outbox/` for a human to post.
+
+---
+
+## Threat model
+
+What the wall bounds: **where** the Embassy speaks. No content flowing
+through it, and no value the relay handles, can address an unmapped channel.
+
+What the wall does not bound: **what** it says. A hostile post can try to
+steer an LLM rendering. The transforms defend (instruction in the system
+turn, source fenced as data, footer impostors filtered from model output with
+the count recorded) but do not prove. `verbatim` carries hostile content
+verbatim, by definition; the ledger records it, and the genuine footer is the
+last line.
+
+What the ledger proves, by configuration:
+
+| | edits / deletion / reorder | rollback | total wipe |
+|---|---|---|---|
+| unsigned, no anchor | detected | **not ruled out** | looks like a fresh install |
+| `EMBASSY_LEDGER_KEY` off-host | detected | detected | looks like a fresh install |
+| checked against a delivered anchor | detected | detected | detected |
+
+Who the wall does not stop: an operator who edits the code, sets
+`EMBASSY_HOME` to a different charter, or calls `Charter.load(path)`. No local
+mechanism stops the person with the keys; what this one does is leave a
+trace — the charter and constitution hashes are recorded on every open, and
+every crossing names the constitution it rendered under.
 
 ---
 
 ## Layout
 
 ```
-CHARTER.md              the source of truth — channels, roles, transforms, rates
-SOUL.md                 the constitution the transforms are bound by
-src/charter.ts          parsing and enforcement; ScopeViolation lives here
-src/ledger.ts           append-only record of every crossing
+CHARTER.md              the source of truth — channels, roles, transforms, rates, model
+SOUL.md                 the constitution every transform renders under
+src/charter.ts          parsing and enforcement; Edge and ScopeViolation live here
+src/ledger.ts           hash-chained record, sidecar head, lock, verification
 src/transforms.ts       agent-human, human-agent, verbatim
-src/relay.ts            read → render → record → deliver
-src/adapters/           moltbook, console
-src/wall.test.ts        the wall is the load-bearing claim, so it gets the tests
+src/relay.ts            wall → lock → rate → render → record → deliver → record
+src/adapters/           moltbook, console — every method begins with requireEdge()
+src/wall.test.ts        36 tests: the wall, the parser, the chain
+src/relay.test.ts       11 tests: ordering, rate races, retry, verbatim fidelity
 legacy/embassy-v1.ts    the original, kept runnable: npm run v1
 ```
 
@@ -122,52 +182,29 @@ legacy/embassy-v1.ts    the original, kept runnable: npm run v1
 ## What changed, and why
 
 **v1** (January 30, 2026) shipped in the week Moltbook launched and 36,000+
-agents formed religions, network states, and boards for complaining about their
-humans. It got the premise right — humans could not participate in agent-space,
-and translation was the missing piece — and the enforcement wrong. SOUL.md was
-loaded, truncated to 2,000 characters, and pasted into a prompt. It was a
-promise, not a mechanism. Nothing stopped the Embassy from posting anywhere, and
-nothing recorded what it had said.
+agents formed religions, network states, and boards for complaining about
+their humans. It got the premise right — humans could not participate in
+agent-space, and translation was the missing piece — and the enforcement
+wrong. SOUL.md was loaded, truncated to 2,000 characters, and pasted into a
+prompt. Nothing stopped the Embassy from posting anywhere, and nothing
+recorded what it had said.
 
-**v2** replaces every one of those promises with a mechanism.
-
-The wall is not a rule the relay follows; it is the shape of what the relay can
-do. Adapters receive a resolved `Edge` and have no method that accepts a channel
-name, so there is no expressible program in which the Embassy addresses an
-unmapped channel. That is the
-[object-capability model](https://en.wikipedia.org/wiki/Object-capability_model)
-— authority carried by unforgeable references rather than checked against an
-identity at call time — applied to an agent's reach. It is a good fifty years
-old and still the right answer: a check can be forgotten, and a prompt can be
-argued with, but a capability you were never handed cannot be used.
-
-The transform column is the part that is specific to this problem. A relay that
-only routes assumes both sides read the same language. The Embassy exists
-because they do not, so the destination declares how a message is rendered on
-arrival, and `verbatim` is a choice that has to be made rather than a default
-that happens.
-
-The ledger is what makes any of it checkable by someone who does not trust the
-operator, which at a boundary between two civilizations is the only kind of
-trust worth engineering for.
+**v2** replaces each of those promises with a mechanism, and then had the
+mechanisms attacked. The first cut of v2 made three claims; an adversarial
+review found two of them false as written (a forgeable `Edge`, a ledger that
+could be edited with `verify` still reporting intact). Two more rounds
+followed. The claims above are what is left standing, and the tests are the
+attacks that no longer work.
 
 | | v1 (Jan 2026) | v2 (Sep 2026) |
 |---|---|---|
-| Reach | unbounded | charter, enforced by construction |
-| Constitution | pasted into a prompt | binds every transform; charter and ledger enforce it |
-| Cross-language rendering | ad hoc, per command | declared per destination |
-| Audit trail | none | append-only, hashed, source beside rendering |
-| Rate limits | none | counted against the ledger |
-| Platforms | Moltbook, hardcoded | adapter interface |
-
----
-
-## Constitution
-
-[`SOUL.md`](./SOUL.md) governs every rendering the Embassy produces. In v1 it
-was decoration. In v2 it is loaded into the system prompt of every transform
-and, more to the point, the charter and the ledger enforce mechanically what it
-used to only assert.
+| Reach | unbounded | charter; `Edge` unforgeable at type level and runtime |
+| Constitution | pasted into a prompt | system turn of every transform; hash recorded on every crossing |
+| Cross-language rendering | ad hoc, per command | declared per destination; `verbatim` is exact |
+| Audit trail | none | hash chain + sidecar + anchors in delivered messages |
+| Rate limits | none | counted against the ledger, under lock |
+| Platforms | Moltbook, hardcoded | adapter interface with runtime edge checks |
+| Tests | none | 47, mostly former attacks |
 
 ---
 

@@ -2,152 +2,235 @@
  * The relay.
  *
  * Reads from mapped inbound edges, renders through the transform the
- * destination declares, writes to mapped outbound edges, and records every
- * crossing in the ledger.
+ * destination declares, records the crossing, delivers, records the
+ * delivery. The relay holds no policy of its own: everything it is allowed
+ * to do comes from the charter, and everything it did is in the ledger.
  *
- * The relay holds no policy of its own. Everything it is allowed to do comes
- * from the charter, and everything it did is in the ledger.
+ * Order inside one crossing, and why:
+ *
+ *   1. wall        — assertCrossing; a disallowed crossing costs nothing
+ *   2. lock        — one crossing at a time per ledger, across processes
+ *   3. rate        — counted against the ledger, inside the lock (no TOCTOU)
+ *   4. render      — the model runs only after 1–3 pass
+ *   5. record      — crossing entry, with the exact body about to be sent
+ *   6. deliver     — adapter write
+ *   7. record      — delivery entry: ok + ref, or failure + error
+ *   8. unlock
+ *
+ * A failure at 6 leaves a crossing with no successful delivery; its sources
+ * are not marked seen, so the next sweep picks them up again, and
+ * `redeliver <id>` can resend the same recorded body.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Charter, Edge, ScopeViolation } from "./charter";
-import { Ledger, Crossing } from "./ledger";
-import { getTransform, loadSoul, TransformContext } from "./transforms";
-import { Adapter, InboundMessage, NoAdapter } from "./adapters/types";
+import { Ledger, LedgerLocked, CrossingEntry, DeliveryEntry, crossingId, sha } from "./ledger";
+import { getTransform, loadSoul, stripFooterLines, PROMPT_VERSION, Transform, TransformContext, TRANSFORMS } from "./transforms";
+import { Adapter, DeliveryRef, InboundMessage, NoAdapter } from "./adapters/types";
+
+const ANTHROPIC_DEFAULT = "https://api.anthropic.com";
 
 export interface RelayResult {
-  crossing: Crossing;
-  delivered: string;
+  crossing: CrossingEntry;
+  delivery: DeliveryEntry | null;
+  dryRun: boolean;
+}
+
+export interface EmbassyOptions {
+  ledger?: Ledger;
+  transforms?: Readonly<Record<string, Transform>>;
+  anthropic?: Anthropic;
+  soul?: string;
+  dryRun?: boolean;
 }
 
 export class RateExceeded extends Error {
   constructor(edge: Edge, used: number) {
-    super(
-      `'${edge.id}' is at its charter rate (${used}/${edge.rate!.count} per ${edge.rate!.per}) — nothing sent`
-    );
+    super(`'${edge.id}' is at its charter rate (${used}/${edge.rate!.count} per ${edge.rate!.per}) — nothing sent`);
     this.name = "RateExceeded";
   }
 }
 
 export class Embassy {
-  charter: Charter;
+  readonly #charter: Charter;
   readonly ledger: Ledger;
-  private adapters: Map<string, Adapter>;
-  private anthropic: Anthropic;
-  private soul: string;
+  readonly dryRun: boolean;
+  readonly #adapters: Map<string, Adapter>;
+  readonly #transforms: Readonly<Record<string, Transform>>;
+  readonly #anthropic: Anthropic;
+  readonly #soul: string;
+  readonly soulHash: string;
+  #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(charter: Charter, adapters: Adapter[], ledger: Ledger = new Ledger()) {
-    this.charter = charter;
-    this.ledger = ledger;
-    this.adapters = new Map(adapters.map((a) => [a.platform, a]));
-    this.anthropic = new Anthropic();
-    this.soul = loadSoul();
+  constructor(charter: Charter, adapters: Adapter[], opts: EmbassyOptions = {}) {
+    this.#charter = charter;
+    this.ledger = opts.ledger ?? new Ledger();
+    this.dryRun = opts.dryRun ?? false;
+    this.#adapters = new Map(adapters.map((a) => [a.platform, a]));
+    this.#transforms = opts.transforms ?? TRANSFORMS;
+    this.#soul = opts.soul ?? loadSoul();
+    this.soulHash = sha(this.#soul);
+    // The endpoint is charter-governed, not environment-governed: an env var
+    // cannot silently redirect every rendering to another server.
+    this.#anthropic =
+      opts.anthropic ?? new Anthropic({ baseURL: charter.meta.endpoint ?? ANTHROPIC_DEFAULT });
+
+    for (const edge of charter.list()) {
+      if (!this.#adapters.has(edge.platform)) {
+        throw new NoAdapter(edge.platform, [...this.#adapters.keys()]);
+      }
+    }
   }
 
-  /** Re-read the charter without restarting. Wired to SIGHUP by the CLI. */
-  reloadCharter(): void {
-    this.charter = this.charter.reload();
+  get charter(): Charter {
+    return this.#charter;
   }
 
-  private adapterFor(edge: Edge): Adapter {
-    const adapter = this.adapters.get(edge.platform);
-    if (!adapter) throw new NoAdapter(edge.platform, [...this.adapters.keys()]);
+  /**
+   * Record the charter AND constitution in force (sha256 of each, plus edge
+   * ids) if either differs from the last recorded. Call once on open. This is
+   * what makes a charter edit, a SOUL.md edit, or an EMBASSY_HOME
+   * substitution of either, visible in the audit trail.
+   */
+  async noteCharter(): Promise<boolean> {
+    if (this.dryRun) return false;
+    return this.ledger.withLock(async () => {
+      const last = this.ledger.lastCharter();
+      if (last && last.charterHash === this.#charter.hash && last.soulHash === this.soulHash) return false;
+      this.ledger.recordCharter(this.#charter.hash, this.soulHash, this.#charter.list().map((e) => `${e.id}=${e.platform}:${e.channel}:${e.role}/${e.direction}`));
+      return true;
+    });
+  }
+
+  #adapterFor(edge: Edge): Adapter {
+    const adapter = this.#adapters.get(edge.platform);
+    if (!adapter) throw new NoAdapter(edge.platform, [...this.#adapters.keys()]);
     return adapter;
   }
 
-  private ctx(note?: string): TransformContext {
-    return { soul: this.soul, anthropic: this.anthropic, note };
+  #ctx(): TransformContext {
+    return { soul: this.#soul, model: this.#charter.meta.model, anthropic: this.#anthropic };
+  }
+
+  /** Serialize crossings within this process; the file lock serializes across processes. */
+  #serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(fn, fn);
+    this.#queue = run.catch(() => undefined);
+    return run;
+  }
+
+  #footer(id: string, from: Edge[], to: Edge, transform: string): string {
+    const anchor = this.ledger.head();
+    return (
+      `\n\n---\n*Relayed by The Embassy · crossing \`${id}\` · ` +
+      `${from.map((f) => f.id).join("+")} → ${to.id} via \`${transform}\` · ` +
+      `ledger #${anchor.seq} ${anchor.hash.slice(0, 12)}*`
+    );
   }
 
   /** Read from an inbound edge. Throws if the charter does not permit it. */
   async collect(edgeId: string, limit: number = 25): Promise<InboundMessage[]> {
-    const edge = this.charter.assertReadable(edgeId);
-    return this.adapterFor(edge).read(edge, limit);
+    const edge = this.#charter.assertReadable(edgeId);
+    return this.#adapterFor(edge).read(edge, limit);
+  }
+
+  /** One crossing, end to end. */
+  async relay(fromIds: string[], toId: string, source: string, opts: { title?: string; sources?: string[] } = {}): Promise<RelayResult> {
+    const { from, to, transform } = this.#charter.assertCrossing(fromIds, toId);
+    const render = getTransform(transform, this.#transforms);
+
+    return this.#serial(() =>
+      this.ledger.withLock(async () => {
+        if (to.rate) {
+          const used = this.ledger.countWithin(to.id, to.rate);
+          if (used >= to.rate.count) throw new RateExceeded(to, used);
+        }
+
+        // The source is recorded exactly as received — never filtered. Only
+        // the OUTPUT of an LLM transform is filtered for footer impostors
+        // (a model can echo one), and the count is recorded so the filtering
+        // is never silent. `verbatim` is delivered exactly as received.
+        const raw = (await render(source, this.#ctx())).trim();
+        const rendered = transform === "verbatim" ? raw : stripFooterLines(raw);
+        const strippedLines = transform === "verbatim" ? 0 : raw.split("\n").length - rendered.split("\n").length;
+        if (!rendered) throw new Error(`transform '${transform}' produced nothing for ${fromIds.join("+")} → ${to.id}`);
+
+        const id = crossingId();
+        const body = this.#charter.meta.provenance === "required"
+          ? rendered + this.#footer(id, from, to, transform)
+          : rendered;
+        const title = opts.title ?? "";
+
+        if (this.dryRun) {
+          const preview: CrossingEntry = {
+            schema: 2, kind: "crossing", seq: 0, prev: "", hash: "", anchor: this.ledger.head(),
+            id, at: new Date().toISOString(), from: from.map((f) => f.id), to: to.id, transform,
+            model: this.#charter.meta.model, promptVersion: PROMPT_VERSION, soulHash: this.soulHash, strippedLines,
+            sources: opts.sources ?? [], title, source, sourceHash: "", rendered, body, bodyHash: "",
+          };
+          return { crossing: preview, delivery: null, dryRun: true };
+        }
+
+        const crossing = this.ledger.recordCrossing({
+          id, from: from.map((f) => f.id), to: to.id, transform,
+          model: this.#charter.meta.model, promptVersion: PROMPT_VERSION, soulHash: this.soulHash, strippedLines,
+          sources: opts.sources ?? [], title, source, rendered, body,
+        });
+
+        const delivery = await this.#deliver(crossing, to);
+        return { crossing, delivery, dryRun: false };
+      })
+    );
+  }
+
+  async #deliver(crossing: CrossingEntry, to: Edge): Promise<DeliveryEntry> {
+    let ref: DeliveryRef;
+    try {
+      ref = await this.#adapterFor(to).write(to, crossing.title, crossing.body);
+    } catch (err) {
+      const delivery = this.ledger.recordDelivery(crossing.id, { ok: false, error: (err as Error).message });
+      throw Object.assign(err as Error, { crossing, delivery });
+    }
+    return this.ledger.recordDelivery(crossing.id, { ok: true, ref: ref.url });
+  }
+
+  /** Resend a recorded crossing's exact body. No re-render, no new crossing. */
+  async redeliver(id: string): Promise<DeliveryEntry> {
+    const crossing = this.ledger.find(id);
+    if (!crossing) throw new Error(`no crossing '${id}'`);
+    if (this.ledger.deliveryOf(id)) throw new Error(`crossing '${id}' was already delivered`);
+    const to = this.#charter.assertWritable(crossing.to);
+    return this.#serial(() => this.ledger.withLock(() => this.#deliver(crossing, to)));
   }
 
   /**
-   * One crossing, end to end.
-   *
-   * Order matters: the wall is checked before the model is called, so a
-   * disallowed crossing costs nothing and leaves no trace of the content
-   * anywhere it should not be.
-   */
-  async relay(
-    fromId: string,
-    toId: string,
-    source: string,
-    title: string = ""
-  ): Promise<RelayResult> {
-    const { from, to, transform } = this.charter.assertCrossing(fromId, toId);
-
-    if (to.rate) {
-      const used = this.ledger.countWithin(to.id, to.rate);
-      if (used >= to.rate.count) throw new RateExceeded(to, used);
-    }
-
-    const render = getTransform(transform);
-    const rendered = await render(source, this.ctx(`${from.id} → ${to.id}`));
-
-    if (!rendered.trim()) {
-      throw new Error(`transform '${transform}' produced nothing for ${from.id} → ${to.id}`);
-    }
-
-    // Record before delivering, so nothing can be sent that is not in the
-    // ledger. A delivery failure leaves a crossing marked undelivered.
-    const crossing = this.ledger.record({
-      from: from.id,
-      to: to.id,
-      transform,
-      source,
-      rendered,
-    });
-
-    const body =
-      this.charter.meta.provenance === "required"
-        ? `${rendered}\n\n---\n*Relayed by The Embassy · crossing \`${crossing.id}\` · ` +
-          `${from.id} → ${to.id} via \`${transform}\` · ` +
-          `verify: \`embassy verify ${crossing.id}\`*`
-        : rendered;
-
-    const delivered = await this.adapterFor(to).write(to, title, body);
-    return { crossing, delivered };
-  }
-
-  /**
-   * Gather everything new on the inbound edges that route to `toId`, and
-   * relay it as one crossing.
+   * Gather everything not yet delivered from the inbound edges, and relay
+   * it as one crossing. Sources are tracked by id in the ledger, not by
+   * pattern-matching the text.
    */
   async sweep(fromIds: string[], toId: string, title: string): Promise<RelayResult | null> {
-    const seen = new Set(
-      this.ledger
-        .all()
-        .flatMap((c) => c.source.match(/\[src:([^\]]+)\]/g) ?? [])
-    );
+    this.#charter.assertCrossing(fromIds, toId);
+    const seen = this.ledger.deliveredSources();
 
     const collected: InboundMessage[] = [];
     for (const fromId of fromIds) {
-      for (const message of await this.collect(fromId)) {
-        const tag = `[src:${message.id}]`;
-        if (!seen.has(tag)) {
-          seen.add(tag);
-          collected.push(message);
-        }
+      for (const m of await this.collect(fromId)) {
+        if (!seen.has(m.id)) { seen.add(m.id); collected.push(m); }
       }
     }
-
     if (!collected.length) return null;
 
     const source = collected
-      .map(
-        (m) =>
-          `[src:${m.id}] ${m.title || "(untitled)"} — ${m.author}` +
-          (m.signal ? ` (${m.signal}↑)` : "") +
-          `\n${m.body.slice(0, 800)}`
+      .map((m) =>
+        `## ${m.title || "(untitled)"}\n` +
+        `author: ${m.author} · channel: ${m.channel}` + (m.signal ? ` · ${m.signal}↑` : "") + (m.url ? ` · ${m.url}` : "") +
+        `\n\n${m.body.slice(0, 800)}`
       )
       .join("\n\n---\n\n");
 
-    return this.relay(fromIds[0], toId, source, title);
+    return this.relay(fromIds, toId, source, { title, sources: collected.map((m) => m.id) });
   }
 }
 
-export { ScopeViolation };
+export { ScopeViolation, LedgerLocked };
+export type { Adapter, DeliveryRef, InboundMessage };

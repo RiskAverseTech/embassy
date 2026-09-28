@@ -1,9 +1,10 @@
 /**
  * Console adapter.
  *
- * Stands in for the human side. Writes go to stdout and to an outbox file so
- * a bulletin can be reviewed before a human posts it; reads come from stdin
- * or from an inbox file of human questions.
+ * Stands in for the human side. Writes go to an outbox file (and stdout) so
+ * a bulletin can be reviewed before a human posts it; reads come from an
+ * inbox file named by the edge's channel, so two console listen edges are
+ * two separate inboxes.
  *
  * It is also how you exercise the whole relay — charter, wall, transforms,
  * ledger — without credentials on any platform.
@@ -12,38 +13,50 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import type { Edge } from "../charter";
-import { Adapter, InboundMessage } from "./types";
+import { Edge } from "../charter";
+import { Adapter, AdapterError, DeliveryRef, InboundMessage, requireEdge } from "./types";
 
 const DIR = path.join(os.homedir(), ".config", "embassy");
 const OUTBOX = path.join(DIR, "outbox");
-const INBOX = path.join(DIR, "inbox.jsonl");
+
+const CHANNEL = /^[a-z0-9@][a-z0-9@._-]{0,63}$/i;
+
+function inboxFor(channel: string): string {
+  if (!CHANNEL.test(channel)) throw new AdapterError(`console channel '${channel}' is not a valid inbox name`);
+  return path.join(DIR, `inbox.${channel.replace(/^@/, "")}.jsonl`);
+}
 
 export class ConsoleAdapter implements Adapter {
   readonly platform = "console";
-  private quiet: boolean;
+  readonly capabilities = new Set<"read" | "write" | "reply">(["read", "write"]);
+  #quiet: boolean;
 
-  constructor(quiet: boolean = false) {
-    this.quiet = quiet;
+  constructor(opts: { quiet?: boolean } = {}) {
+    this.#quiet = opts.quiet ?? false;
   }
 
   async read(edge: Edge, limit: number = 25): Promise<InboundMessage[]> {
-    if (!fs.existsSync(INBOX)) return [];
+    requireEdge(edge, this.platform);
+    const file = inboxFor(edge.channel);
+    if (!fs.existsSync(file)) return [];
     return fs
-      .readFileSync(INBOX, "utf-8")
+      .readFileSync(file, "utf-8")
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as InboundMessage)
       .slice(-limit);
   }
 
-  async write(edge: Edge, title: string, body: string): Promise<string> {
+  async write(edge: Edge, title: string, body: string): Promise<DeliveryRef> {
+    requireEdge(edge, this.platform);
+    if (!CHANNEL.test(edge.channel)) throw new AdapterError(`console channel '${edge.channel}' is not valid`);
+
     fs.mkdirSync(OUTBOX, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const file = path.join(OUTBOX, `${edge.id}-${stamp}.md`);
     fs.writeFileSync(file, `# ${title}\n\n${body}\n`, "utf-8");
 
-    if (!this.quiet) {
+    if (!this.#quiet) {
       console.log("\n" + "─".repeat(64));
       console.log(`  ${edge.channel}  ·  ${edge.id}`);
       console.log("─".repeat(64));
@@ -52,20 +65,22 @@ export class ConsoleAdapter implements Adapter {
       console.log("─".repeat(64));
       console.log(`  saved: ${file}`);
     }
-    return file;
+    return { id: path.basename(file, ".md"), url: file };
   }
 
-  /** Drop a human question into the inbox for the next relay. */
-  static queue(message: { author: string; body: string }): InboundMessage {
+  /** Drop a human message into a console edge's inbox for the next relay. */
+  static queue(edge: Edge, message: { author: string; body: string }): InboundMessage {
+    requireEdge(edge, "console");
     fs.mkdirSync(DIR, { recursive: true });
     const entry: InboundMessage = {
-      id: `human-${Date.now()}`,
+      id: `human-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      channel: edge.channel,
       author: message.author,
       title: "",
       body: message.body,
       at: new Date().toISOString(),
     };
-    fs.appendFileSync(INBOX, JSON.stringify(entry) + "\n", "utf-8");
+    fs.appendFileSync(inboxFor(edge.channel), JSON.stringify(entry) + "\n", "utf-8");
     return entry;
   }
 }

@@ -9,9 +9,10 @@
   "scripts": {
     "embassy": "ts-node src/cli.ts",
     "charter": "ts-node src/cli.ts charter",
+    "doctor": "ts-node src/cli.ts doctor",
     "bulletin": "ts-node src/cli.ts bulletin",
     "ledger": "ts-node src/cli.ts ledger",
-    "test": "ts-node src/wall.test.ts",
+    "test": "ts-node src/wall.test.ts && ts-node src/relay.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "v1": "ts-node legacy/embassy-v1.ts"
@@ -40,5 +41,8 @@
     "@types/node": "^20.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

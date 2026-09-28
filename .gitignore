@@ -38,3 +38,7 @@ inbox.jsonl
 
 # npm lockfile (this repo uses pnpm)
 package-lock.json
+
+# ledger sidecar and lock
+*.head
+*.lock
