@@ -52,6 +52,7 @@ class FakeAdapter implements Adapter {
   readonly platform = "fake";
   readonly kind = "console";
   readonly capabilities = new Set<"read" | "write" | "reply">(["read", "write"]);
+  maxBody: number | null = null;
   async check() { return { ok: true, detail: "fake" }; }
   feeds: Record<string, InboundMessage[]> = {};
   writes: Array<{ edge: string; title: string; body: string }> = [];
@@ -132,7 +133,7 @@ test("a delivery failure leaves a recorded crossing with a failed delivery, and 
   assert.equal(ledger.find(id)!.body.startsWith("verbatim body"), true);
   assert.equal(ledger.deliveryOf(id), null);
   assert.equal(ledger.deliveries()[0].ok, false);
-  assert.equal(ledger.deliveredSources().has("p9"), false, "sources of a failed delivery are not marked seen");
+  assert.equal(ledger.settledSources().has("p9"), false, "sources of a failed delivery are not marked seen");
 
   const d = await embassy.redeliver(id);
   assert.equal(d.ok, true);
@@ -226,6 +227,76 @@ test("noteCharter records charter AND soul hashes once, and again when either ch
   assert.equal(ledger.all().filter((e) => e.kind === "charter").length, 2);
   const r = await swapped.relay(["src.a"], "dst.v", "x");
   assert.equal(r.crossing.soulHash, swapped.soulHash, "every crossing names the constitution it rendered under");
+});
+
+test("a destination with a hard limit refuses BEFORE recording or spending rate, settles the source, and the footer length is exact", async () => {
+  const { embassy, adapter, ledger, calls } = setup();
+  adapter.maxBody = 400;
+
+  // verbatim: a 300-char body is compliant alone; with the footer it is not. Refused before render/record.
+  const long = "x".repeat(300);
+  await assert.rejects(() => embassy.relay(["src.a"], "dst.v", long, { sources: ["big1"] }), /accepts at most 400.*nothing rendered, recorded, or sent/i);
+  assert.equal(ledger.crossings().length, 0, "no crossing recorded");
+  assert.equal(adapter.writes.length, 0, "nothing sent");
+  assert.equal(ledger.all().filter((e) => e.kind === "refused").length, 1, "a refusal entry settles the source");
+  assert.equal(ledger.settledSources().has("big1"), true);
+  assert.equal(ledger.countWithin("dst.v", { count: 1, per: "day" }), 0, "no rate consumed");
+
+  // a body that fits with the footer goes through, and the delivered length is exactly under the limit
+  const ok = await embassy.relay(["src.a"], "dst.v", "y".repeat(200));
+  assert.ok(ok.crossing.body.length <= 400 && ok.crossing.body.length > 200);
+
+  // LLM transform: the hint given to the transform is the limit minus the exact footer length
+  adapter.feeds.a = [msg("p-hint", "hello")];
+  await embassy.relay(["src.a"], "dst", "hint me"); // dst has 1/day; consumes it
+  const footerLen = ok.crossing.body.length - 200;
+  assert.ok(footerLen > 100 && footerLen < 200, `footer ${footerLen}`);
+  void calls;
+});
+
+test("a limited verbatim sweep refuses per source: one huge post is settled alone and the small one still goes", async () => {
+  const { embassy, adapter, ledger } = setup();
+  adapter.maxBody = 400;
+  adapter.feeds.a = [msg("huge", "z".repeat(900)), msg("small", "fine")];
+  const r = await embassy.sweep(["src.a"], "dst.v", "T");
+  assert.ok(r, "the small post was delivered");
+  assert.deepEqual(r!.crossing.sources, ["small"]);
+  const refused = ledger.all().filter((e) => e.kind === "refused") as any[];
+  assert.equal(refused.length, 1);
+  assert.deepEqual(refused[0].sources, ["huge"], "only the post that can never fit is settled");
+  assert.equal(await embassy.sweep(["src.a"], "dst.v", "T"), null, "nothing left: huge settled, small delivered");
+  assert.equal(ledger.crossings().length, 1);
+});
+
+test("a limited verbatim sweep packs what fits and leaves the rest for the next sweep", async () => {
+  const { embassy, adapter } = setup();
+  adapter.maxBody = 400;
+  adapter.feeds.a = [msg("a1", "a".repeat(120)), msg("a2", "b".repeat(120)), msg("a3", "c".repeat(120))];
+  const first = await embassy.sweep(["src.a"], "dst.v", "");
+  assert.ok(first!.crossing.sources.length >= 1 && first!.crossing.sources.length < 3, "not everything fit in one 400-char crossing");
+  assert.ok(first!.crossing.body.length <= 400);
+  const second = await embassy.sweep(["src.a"], "dst.v", "");
+  assert.ok(second, "the remainder is picked up next time");
+  assert.equal(new Set([...first!.crossing.sources, ...second!.crossing.sources]).size, first!.crossing.sources.length + second!.crossing.sources.length, "no source delivered twice");
+});
+
+test("an LLM overrun retries once with a tighter ceiling, then refuses without settling any source", async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "CHARTER.md"), CHARTER);
+  const hints: number[] = [];
+  const transforms: Record<string, Transform> = {
+    "agent-human": async (_s, ctx) => { hints.push(ctx.maxChars ?? -1); return "R".repeat(600); },
+    "human-agent": async (s) => s, verbatim: async (s) => s,
+  };
+  const adapter = new FakeAdapter(); adapter.maxBody = 400;
+  const ledger = new Ledger(path.join(dir, "ledger.jsonl"), null);
+  const embassy = new Embassy(Charter.load(path.join(dir, "CHARTER.md")), [adapter, new ConsoleAdapter({ platform: "console", quiet: true })], { ledger, transforms, soul: "s", anthropic: {} as any });
+  adapter.feeds.a = [msg("p1", "hello")];
+  await assert.rejects(() => embassy.sweep(["src.a"], "dst", "T"), /accepts at most 400/);
+  assert.equal(hints.length, 2, "rendered twice: once with the exact hint, once tighter");
+  assert.ok(hints[1] < hints[0]);
+  assert.equal(ledger.settledSources().has("p1"), false, "the source is not settled — the rendering failed, not the post");
+  assert.equal(ledger.countWithin("dst", { count: 1, per: "day" }), 0, "no rate consumed");
 });
 
 test("run() executes a charter route, and queues text into a console inbox first when given", async () => {

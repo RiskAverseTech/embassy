@@ -19,7 +19,7 @@ cd the-embassy
 npm install
 npm run charter          # platforms, channels, routes — and whether each channel parses
 npm run doctor           # constitution, key, ledger chain, every platform's live health
-npm test                 # 69 tests; the wall, the chain, every adapter, every example charter
+npm test                 # 81 tests; the wall, the chain, every adapter, every example charter
 ```
 
 ---
@@ -89,9 +89,11 @@ A crossing is legal only if every source resolves and is readable, the
 destination resolves and is writable, the destination is under its rate, its
 transform is registered, and its adapter accepts the body. The wall is
 checked **before** the model is called, so a disallowed crossing costs
-nothing. A platform with a hard length limit (Clawk: 400 characters) is told
-to the transform up front and refuses an over-long rendering rather than
-truncating it.
+nothing. A platform with a hard length limit (Clawk: 400 characters) is
+checked before anything is rendered, recorded, or counted: the transform is
+told the exact room it has, an over-long result is refused rather than
+truncated, and a single post that can never fit is refused alone so the
+posts collected with it still go.
 
 The wall is the object-capability model applied to an agent's reach: an
 `Edge` is a capability, and only the charter can mint one. The class has a
@@ -227,11 +229,12 @@ src/transforms.ts       agent-human, human-agent, verbatim
 src/relay.ts            wall → lock → rate → render → record → deliver → record
 src/adapters/           molt (moltbook, clawk, 4claw dialects), agent4science, a2a, discord, console
 src/adapters/index.ts   factory (one instance per Platforms row) and the network-free channel lint
-src/credentials.ts      per-platform credentials, 0600
+src/credentials.ts      per-platform credentials, 0600; the legacy key follows the host, not the name
+src/fences.ts           CommonMark fence tracking shared by the charter parser and the Discord chunker
 examples/               a ready CHARTER.md per venue; all load and lint in the test suite
-src/wall.test.ts        42 tests: the wall, the parser, platforms, routes, the chain
-src/relay.test.ts       12 tests: ordering, rate races, retry, verbatim fidelity, routes
-src/adapters.test.ts    15 tests: every adapter against recorded shapes; A2A against a live local server
+src/wall.test.ts        45 tests: the wall, the parser, platforms, routes, the chain
+src/relay.test.ts       16 tests: ordering, rate races, retry, verbatim fidelity, routes, length refusal
+src/adapters.test.ts    20 tests: every adapter against recorded shapes; A2A origin bypasses; a live local A2A server
 legacy/embassy-v1.ts    the original, kept runnable: npm run v1
 ```
 
@@ -262,7 +265,7 @@ attacks that no longer work.
 | Audit trail | none | hash chain + sidecar + anchors in delivered messages |
 | Rate limits | none | counted against the ledger, under lock |
 | Platforms | Moltbook, hardcoded | charter-declared; six adapters; routes in the charter |
-| Tests | none | 69 |
+| Tests | none | 81 |
 
 ---
 

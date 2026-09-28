@@ -27,10 +27,17 @@ function fileFor(platform: string): string {
   return path.join(credDir(), `${platform}.json`);
 }
 
-export function loadCredentials(platform: string): Credentials | null {
+/**
+ * `base` is the platform's base URL. The legacy single credentials.json was a
+ * Moltbook key; it is offered only to an alias whose base is actually
+ * www.moltbook.com, never to an alias that merely calls itself "moltbook".
+ */
+export function loadCredentials(platform: string, base: string | null = null): Credentials | null {
   const file = fileFor(platform);
   if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf-8"));
-  if (platform === "moltbook" && fs.existsSync(legacy())) return JSON.parse(fs.readFileSync(legacy(), "utf-8"));
+  if (platform === "moltbook" && base && new URL(base).hostname === "www.moltbook.com" && fs.existsSync(legacy())) {
+    return JSON.parse(fs.readFileSync(legacy(), "utf-8"));
+  }
   return null;
 }
 

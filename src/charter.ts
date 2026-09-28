@@ -17,6 +17,7 @@ import path from "path";
 import crypto from "crypto";
 import { TRANSFORMS } from "./transforms";
 import { findHome } from "./home";
+import { step as fenceStep, stripFenced } from "./fences";
 
 export type Role = "listen" | "speak" | "report" | "both";
 export type Direction = "in" | "out" | "both";
@@ -34,6 +35,8 @@ export interface CharterMeta {
   provenance: "required" | "optional";
   model: string;
   endpoint: string | null;
+  /** Aliases explicitly allowed to point a known dialect at a host other than its well-known one (self-hosted forks). */
+  offhost: readonly string[];
 }
 
 /** A platform alias bound to an adapter kind and (usually) a base URL. */
@@ -221,6 +224,7 @@ function parseFrontmatter(text: string): CharterMeta {
     provenance: fields.provenance === "optional" ? "optional" : "required",
     model: fields.model || DEFAULT_MODEL,
     endpoint,
+    offhost: Object.freeze((fields.offhost ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
   };
 }
 
@@ -249,7 +253,14 @@ function extractSection(text: string, heading: string, required: boolean): strin
   let end = lines.length;
   let count = 0;
 
+  // A heading inside a fenced block is text, not structure — so a fenced
+  // example containing "## Channels" neither starts nor ends a section.
+  // Fences close only with a matching fence (see fences.ts).
+  let fence: import("./fences").Fence | null = null;
   for (let i = 0; i < lines.length; i++) {
+    const r = fenceStep(fence, lines[i]);
+    fence = r.state;
+    if (r.marker || fence) continue;
     if (re.test(lines[i])) {
       count++;
       if (start < 0) start = i + 1;
@@ -271,13 +282,7 @@ function extractSection(text: string, heading: string, required: boolean): strin
     }
   }
   const section = lines.slice(start, end).join("\n").replace(/<!--[\s\S]*?-->/g, "");
-  const kept: string[] = [];
-  let fenced = false;
-  for (const line of section.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
-    if (!fenced) kept.push(line);
-  }
-  return kept.join("\n");
+  return stripFenced(section).join("\n");
 }
 
 /** The first pipe table in a section, as rows of cells. Header must match exactly. */
@@ -314,6 +319,29 @@ function readTable(section: string, heading: string, expected: string[]): string
 const ID = /^[a-z][a-z0-9]*(\.[a-z0-9]+)*$/;
 const EMPTY = (s: string) => !s || s === "—" || s === "-";
 
+/**
+ * A platform base is an https origin plus an optional path, and nothing
+ * else: no userinfo, no query, no fragment, no IP literal, and an ASCII
+ * hostname only — a Cyrillic 'о' in "mоltbook.com" is invisible in a diff,
+ * so it is refused rather than displayed.
+ */
+export function normalizeBase(id: string, raw: string): string {
+  if (/[%\x00-\x20\x7f]/.test(raw)) throw new CharterError(`platform '${id}' base must not contain percent-escapes, whitespace, or control characters`);
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new CharterError(`platform '${id}' base '${raw}' is not a URL`); }
+  if (u.protocol !== "https:") throw new CharterError(`platform '${id}' base must be https:// (got ${u.protocol})`);
+  if (u.username || u.password) throw new CharterError(`platform '${id}' base must not carry credentials (user@host)`);
+  if (u.search || u.hash || /[?#]$/.test(raw)) throw new CharterError(`platform '${id}' base must not have a query or fragment`);
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(u.hostname)) {
+    throw new CharterError(`platform '${id}' base host '${u.hostname}' must be an ASCII domain name (no IP literals, no punycode/IDN)`);
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) throw new CharterError(`platform '${id}' base must not be an IP literal`);
+  // WHATWG URL silently punycodes an IDN host ("mоltbook" with a Cyrillic о → xn--mltbook-9ig); refuse the encoded form too.
+  if (/(^|\.)xn--/i.test(u.hostname) || /[^\x00-\x7f]/.test(raw)) throw new CharterError(`platform '${id}' base host must be plain ASCII — '${raw}' contains an internationalized label (${u.hostname})`);
+  if (u.port) throw new CharterError(`platform '${id}' base must use the default https port`);
+  return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+}
+
 function parsePlatforms(section: string): Platform[] {
   const out: Platform[] = [];
   const seen = new Set<string>();
@@ -322,10 +350,7 @@ function parsePlatforms(section: string): Platform[] {
     if (!(ADAPTER_KINDS as readonly string[]).includes(adapter)) {
       throw new CharterError(`platform '${id}' names adapter '${adapter}' — known: ${ADAPTER_KINDS.join(", ")}`);
     }
-    const url = EMPTY(base) ? null : base;
-    if (url && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(url)) {
-      throw new CharterError(`platform '${id}' base must be an https:// URL (got '${base}')`);
-    }
+    const url = EMPTY(base) ? null : normalizeBase(id, base);
     if (adapter !== "console" && !url) throw new CharterError(`platform '${id}' (${adapter}) needs a base URL`);
     if (seen.has(id)) throw new CharterError(`platform '${id}' is declared twice`);
     seen.add(id);

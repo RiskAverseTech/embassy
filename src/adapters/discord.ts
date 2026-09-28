@@ -19,6 +19,7 @@
 import { Edge } from "../charter";
 import { Adapter, AdapterContext, AdapterError, CheckResult, DeliveryRef, InboundMessage, NotConfigured, callJson, requireEdge } from "./types";
 import { saveCredentials } from "../credentials";
+import { Fence, step as fenceStep } from "../fences";
 
 const API = "https://discord.com/api/v10";
 export const DISCORD_MAX = 2000;
@@ -28,20 +29,34 @@ export function discordChannelKind(channel: string): "both" | null {
   return CHANNEL_ID.test(channel) ? "both" : null;
 }
 
-/** Split at paragraph, then line, then hard boundaries; never mid-word if avoidable. */
+/**
+ * Split at paragraph, then line, then hard boundaries; never mid-word if
+ * avoidable. A code fence left open at a cut is closed at the end of that
+ * chunk and reopened at the start of the next, so no chunk renders text
+ * (the footer above all) as code that the recorded body does not.
+ */
 export function chunk(text: string, max: number = DISCORD_MAX): string[] {
   if (text.length <= max) return [text];
   const out: string[] = [];
   let rest = text;
+  let fence: Fence | null = null;
+  const opener = (f: Fence) => f.ch.repeat(f.len) + (f.info ? f.info : "");
+  const closer = (f: Fence) => f.ch.repeat(f.len);
   while (rest.length > max) {
-    let cut = rest.lastIndexOf("\n\n", max);
-    if (cut < max * 0.5) cut = rest.lastIndexOf("\n", max);
-    if (cut < max * 0.5) cut = rest.lastIndexOf(" ", max);
-    if (cut < max * 0.5) cut = max;
-    out.push(rest.slice(0, cut).trimEnd());
+    const reserve = (fence ? opener(fence).length + 1 : 0) + 8; // reopen prefix + a closing fence
+    const m = max - reserve;
+    let cut = rest.lastIndexOf("\n\n", m);
+    if (cut < m * 0.5) cut = rest.lastIndexOf("\n", m);
+    if (cut < m * 0.5) cut = rest.lastIndexOf(" ", m);
+    if (cut < m * 0.5) cut = m;
+    let piece = rest.slice(0, cut).trimEnd();
     rest = rest.slice(cut).trimStart();
+    const prefix = fence ? opener(fence) + "\n" : "";
+    for (const line of piece.split("\n")) fence = fenceStep(fence, line).state;
+    piece = prefix + piece + (fence ? "\n" + closer(fence) : "");
+    out.push(piece);
   }
-  if (rest) out.push(rest);
+  if (rest) out.push((fence ? opener(fence) + "\n" : "") + rest);
   return out;
 }
 

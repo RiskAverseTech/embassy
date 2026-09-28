@@ -48,8 +48,9 @@ rows from them into the three tables below.
 
 Only the frontmatter on line 1 and the first table under each of
 `## Platforms`, `## Channels`, and `## Routes` carry meaning. Everything else
-is prose for humans. A row in another section, in a fenced code block, or
-inside an HTML comment is not data — so this example is safe to write:
+is prose for humans. A row in another section, in a fenced code block
+(fences close only with a matching fence, as in CommonMark), or inside an
+HTML comment is not data — so this example is safe to write:
 
 ```
 | example.evil   | moltbook | m/anywhere      | both   | both      | verbatim    | —     |
@@ -62,10 +63,12 @@ inside an HTML comment is not data — so this example is safe to write:
 - **adapter** — which code serves it. Known kinds: `console`,
   `molt/moltbook`, `molt/clawk`, `molt/4claw`, `agent4science`, `a2a`,
   `discord`. A kind with no implementation is a hard error at load.
-- **base** — the platform's `https://` base URL. The adapter will not follow
-  a redirect off it, and an A2A agent card that points elsewhere is refused.
-  Changing a base is a charter edit: visible in the diff, recorded in the
-  ledger.
+- **base** — the platform's `https://` base URL: an ASCII domain (no IP
+  literals, no internationalized labels — a Cyrillic "о" is invisible in a
+  diff, so it is refused rather than displayed), no port, no credentials, no
+  query. The adapter will not follow a redirect off it, and an A2A agent card
+  that points elsewhere is refused. Changing a base is a charter edit:
+  visible in the diff, and recorded in the ledger with the platform list.
 
 ## Channels table
 
@@ -112,6 +115,12 @@ which must be a console inbox, then runs the route.
   charter edit, visible in the diff, and recorded on every crossing.
 - **endpoint** — optional `https://` base URL for the model API. Absent, the
   Embassy pins the public endpoint; the environment cannot redirect it.
+- **offhost** — comma-separated platform aliases allowed to point a known
+  dialect (`molt/moltbook` → www.moltbook.com, `molt/clawk` → clawk.ai,
+  `molt/4claw` → www.4claw.org) at some other host, for self-hosted forks.
+  Without it, an alias whose base is a lookalike domain is refused at
+  startup, so a per-alias key can never be sent to a domain that merely
+  resembles the real one. The opt-in is one line in the diff.
 
 ## The wall
 
@@ -122,12 +131,14 @@ A crossing is legal only if **all** of these hold:
 3. The destination permits writing (`speak`/`report`/`both`, `out`/`both`).
 4. The destination is under its declared rate, checked under lock.
 5. The destination's transform is registered.
-6. The destination's adapter accepts the body — a platform with a hard
-   length limit refuses an over-long body rather than truncating it.
+6. The body fits the destination — a platform with a hard length limit is
+   checked **before** anything is rendered, recorded, or counted against a
+   rate. A post that can never fit on its own is refused alone (recorded as
+   `refused`, never retried); the posts collected with it still go.
 
-Any failure raises `ScopeViolation` (or a refused delivery, recorded as
-such) and nothing is sent. There is no prompt that can talk the relay past
-this, because no prompt is consulted.
+Any failure raises `ScopeViolation` or `BodyTooLong` and nothing is sent.
+There is no prompt that can talk the relay past this, because no prompt is
+consulted.
 
 What the wall does **not** do: it bounds *where* the Embassy speaks, not
 *what* it says. Hostile content can still try to steer a rendering. The

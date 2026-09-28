@@ -8,13 +8,32 @@ import { Charter, Platform } from "../charter";
 import { loadCredentials } from "../credentials";
 import { Adapter, AdapterContext, AdapterError } from "./types";
 import { ConsoleAdapter, consoleChannelKind } from "./console";
-import { MoltAdapter, MOLT_DIALECTS, moltChannelKind } from "./molt";
+import { MoltAdapter, MOLT_DIALECTS, MOLT_KNOWN_HOSTS, moltChannelKind } from "./molt";
 import { Agent4ScienceAdapter, a4sChannelKind } from "./agent4science";
 import { A2AAdapter, a2aChannelKind } from "./a2a";
 import { DiscordAdapter, discordChannelKind } from "./discord";
 
-export function buildAdapter(platform: Platform, opts: { fetch?: typeof fetch; quiet?: boolean } = {}): Adapter {
-  const ctx: AdapterContext = { platform, credentials: loadCredentials(platform.id), fetch: opts.fetch ?? globalThis.fetch };
+/**
+ * A known dialect pointed at a host other than its well-known one is refused
+ * unless the charter's frontmatter lists the alias under `offhost:` — an
+ * explicit, diff-visible opt-in for self-hosted forks. Without it, an alias's
+ * per-platform key can never be sent to a lookalike domain.
+ */
+export function assertKnownHost(platform: Platform, offhost: readonly string[]): void {
+  const known = MOLT_KNOWN_HOSTS[platform.adapter];
+  if (!known || !platform.base) return;
+  const host = new URL(platform.base).hostname;
+  if (host !== known && !offhost.includes(platform.id)) {
+    throw new AdapterError(
+      `platform '${platform.id}' points ${platform.adapter} at ${host}, but that dialect lives at ${known}. ` +
+        `If this is a self-hosted fork, add 'offhost: ${platform.id}' to the charter frontmatter.`
+    );
+  }
+}
+
+export function buildAdapter(platform: Platform, opts: { fetch?: typeof fetch; quiet?: boolean; offhost?: readonly string[] } = {}): Adapter {
+  assertKnownHost(platform, opts.offhost ?? []);
+  const ctx: AdapterContext = { platform, credentials: loadCredentials(platform.id, platform.base), fetch: opts.fetch ?? globalThis.fetch };
   switch (platform.adapter) {
     case "console": return new ConsoleAdapter({ platform, credentials: null, fetch: ctx.fetch, ...(opts.quiet ? { quiet: true } : {}) } as any);
     case "agent4science": return new Agent4ScienceAdapter(ctx);
@@ -27,7 +46,7 @@ export function buildAdapter(platform: Platform, opts: { fetch?: typeof fetch; q
 }
 
 export function buildAdapters(charter: Charter, opts: { fetch?: typeof fetch; quiet?: boolean } = {}): Adapter[] {
-  return charter.platforms().map((p) => buildAdapter(p, opts));
+  return charter.platforms().map((p) => buildAdapter(p, { ...opts, offhost: charter.meta.offhost }));
 }
 
 /** Pure, network-free: does this channel string parse for this adapter kind, and in which direction? */
@@ -42,6 +61,13 @@ export function channelKind(kind: string, channel: string): "read" | "write" | "
 /** Lint every edge against its adapter's channel grammar and role. Returns problems; empty means clean. */
 export function lintCharter(charter: Charter): string[] {
   const problems: string[] = [];
+  for (const p of charter.platforms()) {
+    try { assertKnownHost(p, charter.meta.offhost); } catch (err) { problems.push((err as Error).message); }
+    const known = MOLT_KNOWN_HOSTS[p.adapter];
+    if (known && p.base && new URL(p.base).hostname !== known && charter.meta.offhost.includes(p.id)) {
+      problems.push(`${p.id}: NOTE — off-host by charter opt-in; its credentials go to ${new URL(p.base).hostname}, not ${known}`);
+    }
+  }
   for (const e of charter.list()) {
     const p = charter.platform(e.platform);
     const k = channelKind(p.adapter, e.channel);

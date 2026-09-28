@@ -16,7 +16,7 @@ import { getTransform, TRANSFORMS, UnknownTransform, stripFooterLines } from "./
 import { requireEdge, ForgedEdge } from "./adapters/types";
 import { ConsoleAdapter } from "./adapters/console";
 import { moltChannelKind } from "./adapters/molt";
-import { lintCharter, channelKind } from "./adapters/index";
+import { lintCharter, channelKind, buildAdapters } from "./adapters/index";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "embassy-"));
 function charterFile(body: string): string {
@@ -323,6 +323,56 @@ test("platforms bind aliases to adapters and base URLs; channels must name a dec
   assert.throws(() => Charter.load(charterFile(MULTI.replace("| m.hot      | moltbook", "| m.hot      | ghost   "))), /not in the Platforms table/);
 });
 
+test("a platform base is a strict https origin+path: no userinfo, query, fragment, IP, IDN, port, or lookalike tricks", () => {
+  const withBase = (b: string) => MULTI.replace("https://clawk.ai/api/v1", b);
+  for (const bad of [
+    "https://www.moltbook.com@evil.tld/api/v1",
+    "https://www.moltbook.com?x",
+    "https://www.moltbook.com/api/v1#frag",
+    "https://93.184.216.34/api/v1",
+    "https://mоltbook.com/api/v1",          // Cyrillic о
+    "https://xn--mltbook-9ig.com/api/v1",
+    "https://clawk.ai:8443/api/v1",
+    "https://clawk_ai/api/v1",
+    "http://clawk.ai/api/v1",
+  ]) {
+    assert.throws(() => Charter.load(charterFile(withBase(bad))), CharterError, `should refuse ${bad}`);
+  }
+  // lookalike domains are legal URLs; the known-host check refuses to BUILD the adapter unless the charter opts in
+  const lookalike = Charter.load(charterFile(withBase("https://clawk.ai.evil.tld/api/v1")));
+  assert.match(lintCharter(lookalike)[0], /that dialect lives at clawk\.ai.*offhost: clawk/);
+  assert.throws(() => buildAdapters(lookalike), /offhost/);
+  const optedIn = Charter.load(charterFile(withBase("https://clawk.ai.evil.tld/api/v1").replace("default: deny", "default: deny\noffhost: clawk")));
+  assert.doesNotThrow(() => buildAdapters(optedIn, { fetch: (async () => new Response("{}")) as any }));
+  assert.match(lintCharter(optedIn)[0], /NOTE — off-host by charter opt-in/);
+  for (const bad of ["https://clawk%2eai/api/v1", "https://clawk.ai\t/api/v1"]) assert.throws(() => Charter.load(charterFile(withBase(bad))), CharterError, bad);
+  // normalization: trailing slash dropped
+  assert.equal(Charter.load(charterFile(withBase("https://clawk.ai/api/v1/"))).platform("clawk").base, "https://clawk.ai/api/v1");
+});
+
+test("a mismatched fence (open with ```, write ~~~) does not end the block — rows after it stay fenced text", () => {
+  const evil = MULTI.replace(
+    "## Routes",
+    "```\nexample\n~~~\n## Channels\n| id | platform | channel | role | direction | transform | rate |\n|---|---|---|---|---|---|---|\n| evil.x | console | anywhere | both | both | verbatim | — |\n```\n\n## Routes"
+  );
+  const charter = Charter.load(charterFile(evil));
+  assert.equal(charter.list().length, 4, "the real Channels table, not the fenced decoy");
+  assert.throws(() => charter.resolve("evil.x"), ScopeViolation);
+  // and a longer closer of the same char DOES close (CommonMark)
+  const longer = MULTI.replace("## Routes", "````\n## Channels\n| id | platform | channel | role | direction | transform | rate |\n|---|---|---|---|---|---|---|\n| evil.y | console | z | both | both | verbatim | — |\n``````\n\n## Routes");
+  assert.equal(Charter.load(charterFile(longer)).list().length, 4);
+  // an inline-span line like ```a``` is not a fence at all
+  const inline = MULTI.replace("## Routes", "```a``` inline\n\n## Routes");
+  assert.equal(Charter.load(charterFile(inline)).routes().length, 2);
+});
+
+test("a '## Channels' heading inside a fenced block under another section is text, not structure", () => {
+  const decoy = MULTI.replace("## Channels", "```\n## Channels\n| id | platform | channel | role | direction | transform | rate |\n```\n\n## Channels");
+  const charter = Charter.load(charterFile(decoy));
+  assert.equal(charter.platforms().length, 3, "the Platforms section was not truncated by the fenced heading");
+  assert.equal(charter.list().length, 4);
+});
+
 test("a platform base must be https, and a non-console platform must have one", () => {
   assert.throws(() => Charter.load(charterFile(MULTI.replace("https://clawk.ai/api/v1", "http://clawk.ai/api/v1"))), /https/);
   assert.throws(() => Charter.load(charterFile(MULTI.replace("https://clawk.ai/api/v1", "—"))), /needs a base URL/);
@@ -449,8 +499,8 @@ test("truncation (rollback) is caught by the head file, and by a delivered ancho
 test("rewriting the head file without the key is detected on a signed ledger", () => {
   const file = path.join(tmp(), "ledger.jsonl");
   const signed = new Ledger(file, "k");
-  signed.recordCharter("h", "s", ["a"]);
-  signed.recordCharter("h2", "s", ["a"]);
+  signed.recordCharter("h", "s", [], ["a"]);
+  signed.recordCharter("h2", "s", [], ["a"]);
   // attacker truncates and forges the head file with an unsigned digest
   const lines = fs.readFileSync(file, "utf-8").trim().split("\n");
   fs.writeFileSync(file, lines[0] + "\n");
@@ -482,14 +532,14 @@ test("a corrupt line is reported, not fatal, and breaks verification", () => {
 test("a signed ledger rejects a chain rewritten without the key", () => {
   const file = path.join(tmp(), "ledger.jsonl");
   const signed = new Ledger(file, "secret");
-  signed.recordCharter("h", "s", ["a"]);
+  signed.recordCharter("h", "s", [], ["a"]);
   assert.equal(signed.verifyChain().ok, true);
   assert.equal(new Ledger(file, null).verifyChain().ok, false, "unsigned reader cannot validate");
   assert.equal(new Ledger(file, "wrong").verifyChain().ok, false);
   // rewrite without the key: internally consistent to an unsigned verifier, invalid to the keyed one
   const unsigned = new Ledger(file, null);
   fs.writeFileSync(file, "");
-  unsigned.recordCharter("h", "s", ["a"]);
+  unsigned.recordCharter("h", "s", [], ["a"]);
   assert.equal(unsigned.verifyChain().ok, true);
   assert.equal(signed.verifyChain().ok, false);
 });
@@ -514,7 +564,7 @@ test("deliveredSources excludes crossings whose delivery failed", () => {
   ledger.recordDelivery(ok.id, { ok: true, ref: "r" });
   const bad = ledger.recordCrossing({ id: "bad", from: ["a"], to: "b", transform: "verbatim", model: "m", promptVersion: "t", soulHash: "s", strippedLines: 0, sources: ["s-bad"], title: "", source: "", rendered: "", body: "" });
   ledger.recordDelivery(bad.id, { ok: false, error: "500" });
-  const seen = ledger.deliveredSources();
+  const seen = ledger.settledSources();
   assert.equal(seen.has("s-ok"), true);
   assert.equal(seen.has("s-bad"), false);
   assert.equal(ledger.deliveryOf("bad"), null);

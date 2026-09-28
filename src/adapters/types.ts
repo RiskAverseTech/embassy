@@ -114,5 +114,6 @@ export async function callJson(
     throw new AdapterError(`${init.method ?? "GET"} ${url} → ${response.status}: ${(await response.text()).slice(0, 300)}`);
   }
   const text = await response.text();
-  return text ? JSON.parse(text) : {};
+  if (!text) return {};
+  try { return JSON.parse(text); } catch { throw new AdapterError(`${init.method ?? "GET"} ${url} → ${response.status} but the body is not JSON: ${text.slice(0, 120)}`); }
 }

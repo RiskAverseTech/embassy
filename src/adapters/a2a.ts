@@ -71,8 +71,12 @@ export class A2AAdapter implements Adapter {
     const card: AgentCard = await callJson(this.#fetch, `${this.#base}/.well-known/agent-card.json`, { headers: this.#headers() });
     const url = typeof card?.url === "string" ? card.url : `${this.#base}/`;
     // The card may point anywhere; the wall only approved this platform's origin.
-    if (new URL(url).origin !== new URL(this.#base).origin) {
-      throw new AdapterError(`a2a: agent card for '${this.platform}' points its endpoint at ${new URL(url).origin}, not the charter's ${new URL(this.#base).origin} — refused`);
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new AdapterError(`a2a: agent card for '${this.platform}' has an unparseable endpoint url — refused`); }
+    const origin = parsed.origin;
+    if (parsed.username || parsed.password) throw new AdapterError(`a2a: agent card for '${this.platform}' carries credentials in its endpoint url — refused`);
+    if (origin !== new URL(this.#base).origin) {
+      throw new AdapterError(`a2a: agent card for '${this.platform}' points its endpoint at ${origin}, not the charter's ${new URL(this.#base).origin} — refused`);
     }
     this.#card = { ...card, url };
     return this.#card;
@@ -105,7 +109,9 @@ export class A2AAdapter implements Adapter {
     if (rpc?.error) throw new AdapterError(`a2a: ${card.name ?? this.platform} returned error ${rpc.error.code}: ${rpc.error.message}`);
 
     const result = rpc?.result ?? {};
-    const taskId = String(result.id ?? result.taskId ?? messageId);
+    // Peer-supplied; it lands in ledger refs and CLI output, so it is constrained.
+    const rawId = String(result.id ?? result.taskId ?? "");
+    const taskId = /^[A-Za-z0-9_.:-]{1,128}$/.test(rawId) ? rawId : messageId;
     const replyText =
       result.kind === "message" || result.role
         ? textOf(result.parts)

@@ -12,18 +12,18 @@
 
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { Edge } from "../charter";
 import { Adapter, AdapterContext, AdapterError, CheckResult, DeliveryRef, InboundMessage, requireEdge } from "./types";
+import { configDir } from "../credentials";
 
-const DIR = path.join(os.homedir(), ".config", "embassy");
-const OUTBOX = path.join(DIR, "outbox");
+const DIR = () => configDir();
+const OUTBOX = () => path.join(DIR(), "outbox");
 
 const CHANNEL = /^[a-z0-9@][a-z0-9@._-]{0,63}$/i;
 
-function inboxFor(channel: string): string {
+function inboxFor(platform: string, channel: string): string {
   if (!CHANNEL.test(channel)) throw new AdapterError(`console channel '${channel}' is not a valid inbox name`);
-  return path.join(DIR, `inbox.${channel.replace(/^@/, "")}.jsonl`);
+  return path.join(DIR(), `inbox.${platform}.${channel.replace(/^@/, "")}.jsonl`);
 }
 
 export function consoleChannelKind(channel: string): "both" | null {
@@ -42,12 +42,12 @@ export class ConsoleAdapter implements Adapter {
   }
 
   async check(): Promise<CheckResult> {
-    return { ok: true, detail: `outbox ${OUTBOX}` };
+    return { ok: true, detail: `outbox ${OUTBOX()}` };
   }
 
   async read(edge: Edge, limit: number = 25): Promise<InboundMessage[]> {
     requireEdge(edge, this.platform);
-    const file = inboxFor(edge.channel);
+    const file = inboxFor(edge.platform, edge.channel);
     if (!fs.existsSync(file)) return [];
     return fs
       .readFileSync(file, "utf-8")
@@ -61,9 +61,9 @@ export class ConsoleAdapter implements Adapter {
     requireEdge(edge, this.platform);
     if (!CHANNEL.test(edge.channel)) throw new AdapterError(`console channel '${edge.channel}' is not valid`);
 
-    fs.mkdirSync(OUTBOX, { recursive: true });
+    fs.mkdirSync(OUTBOX(), { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(OUTBOX, `${edge.id}-${stamp}.md`);
+    const file = path.join(OUTBOX(), `${edge.id}-${stamp}.md`);
     fs.writeFileSync(file, `# ${title}\n\n${body}\n`, "utf-8");
 
     if (!this.#quiet) {
@@ -81,7 +81,7 @@ export class ConsoleAdapter implements Adapter {
   /** Drop a human message into a console edge's inbox for the next relay. */
   static queue(edge: Edge, message: { author: string; body: string }): InboundMessage {
     if (!Edge.is(edge)) throw new AdapterError("queue() needs a charter-minted Edge");
-    fs.mkdirSync(DIR, { recursive: true });
+    fs.mkdirSync(DIR(), { recursive: true });
     const entry: InboundMessage = {
       id: `human-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       channel: edge.channel,
@@ -90,7 +90,7 @@ export class ConsoleAdapter implements Adapter {
       body: message.body,
       at: new Date().toISOString(),
     };
-    fs.appendFileSync(inboxFor(edge.channel), JSON.stringify(entry) + "\n", "utf-8");
+    fs.appendFileSync(inboxFor(edge.platform, edge.channel), JSON.stringify(entry) + "\n", "utf-8");
     return entry;
   }
 }

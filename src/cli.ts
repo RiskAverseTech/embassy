@@ -8,7 +8,7 @@
 import "dotenv/config";
 import { Charter, ScopeViolation, CharterError } from "./charter";
 import { Ledger } from "./ledger";
-import { Embassy, RateExceeded, LedgerLocked } from "./relay";
+import { Embassy, RateExceeded, LedgerLocked, BodyTooLong } from "./relay";
 import { UnknownTransform, loadSoul } from "./transforms";
 import { Adapter, ForgedEdge, NotConfigured } from "./adapters/types";
 import { buildAdapters, lintCharter } from "./adapters/index";
@@ -267,6 +267,7 @@ main().catch((err) => {
   if (err instanceof Usage) { console.error(`\nUsage: embassy ${msg}\n`); process.exit(5); }
   if (err instanceof ScopeViolation || err instanceof ForgedEdge) { console.error(`\n⛔ scope: ${msg}\n`); process.exit(2); }
   if (err instanceof RateExceeded) { console.error(`\n⏳ rate: ${msg}\n`); process.exit(3); }
+  if (err instanceof BodyTooLong) { console.error(`\n📏 ${msg}\n`); process.exit(3); }
   if (err instanceof CharterError || err instanceof UnknownTransform || err instanceof HomeNotFound) { console.error(`\n📜 charter: ${msg}\n`); process.exit(4); }
   if (err instanceof LedgerLocked) { console.error(`\n🔒 ${msg}\n`); process.exit(1); }
   if (err instanceof NotConfigured) { console.error(`\n🔑 ${msg}\n`); process.exit(1); }

@@ -44,6 +44,14 @@ export interface EmbassyOptions {
   dryRun?: boolean;
 }
 
+/** The body can never fit the destination. Raised BEFORE anything is recorded or any rate is spent. */
+export class BodyTooLong extends Error {
+  constructor(edge: Edge, length: number, max: number) {
+    super(`'${edge.id}' accepts at most ${max} characters; this crossing would be ${length} including its provenance footer — nothing rendered, recorded, or sent. The Embassy does not truncate.`);
+    this.name = "BodyTooLong";
+  }
+}
+
 export class RateExceeded extends Error {
   constructor(edge: Edge, used: number) {
     super(`'${edge.id}' is at its charter rate (${used}/${edge.rate!.count} per ${edge.rate!.per}) — nothing sent`);
@@ -97,7 +105,12 @@ export class Embassy {
     return this.ledger.withLock(async () => {
       const last = this.ledger.lastCharter();
       if (last && last.charterHash === this.#charter.hash && last.soulHash === this.soulHash) return false;
-      this.ledger.recordCharter(this.#charter.hash, this.soulHash, this.#charter.list().map((e) => `${e.id}=${e.platform}:${e.channel}:${e.role}/${e.direction}`));
+      this.ledger.recordCharter(
+        this.#charter.hash,
+        this.soulHash,
+        this.#charter.platforms().map((p) => `${p.id}=${p.adapter}:${p.base ?? "-"}`),
+        this.#charter.list().map((e) => `${e.id}=${e.platform}:${e.channel}:${e.role}/${e.direction}`)
+      );
       return true;
     });
   }
@@ -108,10 +121,19 @@ export class Embassy {
     return adapter;
   }
 
-  #ctx(to?: Edge): TransformContext {
-    const limit = to ? (this.#adapterFor(to) as Adapter & { maxBody?: number | null }).maxBody ?? undefined : undefined;
-    // Leave room for the provenance footer (~160 chars) when a limit applies.
-    const maxChars = typeof limit === "number" ? Math.max(80, limit - (this.#charter.meta.provenance === "required" ? 170 : 0)) : undefined;
+  #limitOf(to: Edge): number | null {
+    const limit = (this.#adapterFor(to) as Adapter & { maxBody?: number | null }).maxBody;
+    return typeof limit === "number" ? limit : null;
+  }
+
+  /** Exact footer length for a crossing to `to`, given the current head. Ids are fixed-width, so only the anchor's seq digits vary. */
+  #footerLength(from: Edge[], to: Edge, transform: string): number {
+    return this.#charter.meta.provenance === "required" ? this.#footer("x".repeat(12), from, to, transform).length : 0;
+  }
+
+  #ctx(from: Edge[], to: Edge, transform: string): TransformContext {
+    const limit = this.#limitOf(to);
+    const maxChars = limit !== null ? Math.max(40, limit - this.#footerLength(from, to, transform)) : undefined;
     return { soul: this.#soul, model: this.#charter.meta.model, anthropic: this.#anthropic, maxChars };
   }
 
@@ -149,14 +171,40 @@ export class Embassy {
           if (used >= to.rate.count) throw new RateExceeded(to, used);
         }
 
+        // A destination with a hard limit is checked BEFORE anything is
+        // spent: verbatim against the source (rendering is identity), LLM
+        // output against the exact footer. A refusal consumes no rate and
+        // settles its sources so sweeps do not retry what can never fit.
+        const limit = this.#limitOf(to);
+        const footerLen = this.#footerLength(from, to, transform);
+        // `settle`: which sources a refusal settles. A single-source verbatim
+        // crossing that cannot fit is settled (it never will). An LLM overrun
+        // settles NOTHING — the sources are fine, the rendering was not — so
+        // the next sweep tries again; cost is bounded to two renders per run.
+        const refuse = (length: number, settle: string[]): never => {
+          if (!this.dryRun) this.ledger.recordRefusal({ from: from.map((f) => f.id), to: to.id, sources: settle, reason: `body ${length} > ${limit} incl. footer` });
+          throw new BodyTooLong(to, length, limit!);
+        };
+        if (limit !== null && transform === "verbatim" && source.trim().length + footerLen > limit) {
+          refuse(source.trim().length + footerLen, (opts.sources ?? []).length === 1 ? opts.sources! : []);
+        }
+
         // The source is recorded exactly as received — never filtered. Only
         // the OUTPUT of an LLM transform is filtered for footer impostors
         // (a model can echo one), and the count is recorded so the filtering
         // is never silent. `verbatim` is delivered exactly as received.
-        const raw = (await render(source, this.#ctx(to))).trim();
-        const rendered = transform === "verbatim" ? raw : stripFooterLines(raw);
+        let ctx = this.#ctx(from, to, transform);
+        let raw = (await render(source, ctx)).trim();
+        let rendered = transform === "verbatim" ? raw : stripFooterLines(raw);
+        if (limit !== null && transform !== "verbatim" && rendered.length + footerLen > limit) {
+          // One retry with a tighter ceiling before giving up on this run.
+          ctx = { ...ctx, maxChars: Math.max(40, Math.floor((ctx.maxChars ?? limit) * 0.7)) };
+          raw = (await render(source, ctx)).trim();
+          rendered = stripFooterLines(raw);
+        }
         const strippedLines = transform === "verbatim" ? 0 : raw.split("\n").length - rendered.split("\n").length;
         if (!rendered) throw new Error(`transform '${transform}' produced nothing for ${fromIds.join("+")} → ${to.id}`);
+        if (limit !== null && rendered.length + footerLen > limit) refuse(rendered.length + footerLen, []);
 
         const id = crossingId();
         const body = this.#charter.meta.provenance === "required"
@@ -231,7 +279,7 @@ export class Embassy {
    */
   async sweep(fromIds: string[], toId: string, title: string): Promise<RelayResult | null> {
     this.#charter.assertCrossing(fromIds, toId);
-    const seen = this.ledger.deliveredSources();
+    const seen = this.ledger.settledSources();
 
     const collected: InboundMessage[] = [];
     for (const fromId of fromIds) {
@@ -241,15 +289,39 @@ export class Embassy {
     }
     if (!collected.length) return null;
 
-    const source = collected
-      .map((m) =>
-        `## ${m.title || "(untitled)"}\n` +
-        `author: ${m.author} · channel: ${m.channel}` + (m.signal ? ` · ${m.signal}↑` : "") + (m.url ? ` · ${m.url}` : "") +
-        `\n\n${m.body.slice(0, 800)}`
-      )
-      .join("\n\n---\n\n");
+    const entry = (m: InboundMessage) =>
+      `## ${m.title || "(untitled)"}\n` +
+      `author: ${m.author} · channel: ${m.channel}` + (m.signal ? ` · ${m.signal}↑` : "") + (m.url ? ` · ${m.url}` : "") +
+      `\n\n${m.body.slice(0, 800)}`;
 
-    return this.relay(fromIds, toId, source, { title, sources: collected.map((m) => m.id) });
+    // On a limited verbatim destination, refuse per source: a post that can
+    // never fit on its own is settled alone, and the others still go. One
+    // long hostile post must not silence everything collected with it.
+    const { to, from, transform } = this.#charter.assertCrossing(fromIds, toId);
+    const limit = this.#limitOf(to);
+    let usable = collected;
+    if (limit !== null && transform === "verbatim") {
+      const footerLen = this.#footerLength(from, to, transform);
+      const tooLong = collected.filter((m) => entry(m).length + footerLen > limit);
+      for (const m of tooLong) {
+        if (!this.dryRun) this.ledger.recordRefusal({ from: fromIds, to: toId, sources: [m.id], reason: `source ${entry(m).length} > ${limit} incl. footer` });
+      }
+      usable = collected.filter((m) => !tooLong.includes(m));
+      if (!usable.length) throw new BodyTooLong(to, entry(tooLong[0]).length + footerLen, limit);
+      // Fit as many as possible in one crossing; the rest wait for the next sweep.
+      const fit: InboundMessage[] = [];
+      let len = footerLen;
+      for (const m of usable) {
+        const add = (fit.length ? 7 : 0) + entry(m).length;
+        if (len + add > limit) break;
+        fit.push(m);
+        len += add;
+      }
+      usable = fit;
+    }
+
+    const source = usable.map(entry).join("\n\n---\n\n");
+    return this.relay(fromIds, toId, source, { title, sources: usable.map((m) => m.id) });
   }
 }
 

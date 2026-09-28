@@ -87,11 +87,26 @@ export interface CharterEntry {
   at: string;
   charterHash: string;
   soulHash: string;
+  platforms: string[];
   edges: string[];
   hash: string;
 }
 
-export type Entry = CrossingEntry | DeliveryEntry | CharterEntry;
+/** A crossing the relay declined before rendering or recording — e.g. the body could never fit the destination. Consumes no rate; settles its sources so sweeps stop retrying them. */
+export interface RefusedEntry {
+  schema: typeof SCHEMA;
+  kind: "refused";
+  seq: number;
+  prev: string;
+  at: string;
+  from: string[];
+  to: string;
+  sources: string[];
+  reason: string;
+  hash: string;
+}
+
+export type Entry = CrossingEntry | DeliveryEntry | CharterEntry | RefusedEntry;
 
 export interface ChainReport {
   ok: boolean;
@@ -271,14 +286,31 @@ export class Ledger {
     return this.crossings().filter((c) => c.to === edgeId && Date.parse(c.at) >= cutoff).length;
   }
 
-  /** Source ids that have been delivered, so a failed delivery is retried next sweep rather than lost. */
-  deliveredSources(): Set<string> {
+  /**
+   * Source ids that are settled: delivered, or refused outright (e.g. could
+   * never fit the destination). A failed delivery is NOT settled, so the
+   * next sweep retries it; a refusal IS, so a sweep does not retry what
+   * cannot ever succeed.
+   */
+  settledSources(): Set<string> {
     const delivered = new Set(this.deliveries().filter((d) => d.ok).map((d) => d.crossing));
     const out = new Set<string>();
     for (const c of this.crossings()) {
       if (delivered.has(c.id)) for (const s of c.sources) out.add(s);
     }
+    for (const r of this.all()) {
+      if (r.kind === "refused") for (const s of r.sources) out.add(s);
+    }
     return out;
+  }
+
+  /** @deprecated use settledSources */
+  deliveredSources(): Set<string> {
+    return this.settledSources();
+  }
+
+  recordRefusal(fields: { from: string[]; to: string; sources: string[]; reason: string }): RefusedEntry {
+    return this.#append<RefusedEntry>({ kind: "refused", at: new Date().toISOString(), ...fields });
   }
 
   // -------------------------------------------------------------------------
@@ -330,12 +362,13 @@ export class Ledger {
     });
   }
 
-  recordCharter(charterHash: string, soulHash: string, edges: string[]): CharterEntry {
+  recordCharter(charterHash: string, soulHash: string, platforms: string[], edges: string[]): CharterEntry {
     return this.#append<CharterEntry>({
       kind: "charter",
       at: new Date().toISOString(),
       charterHash,
       soulHash,
+      platforms,
       edges,
     });
   }

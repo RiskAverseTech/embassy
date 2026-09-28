@@ -189,6 +189,13 @@ const DIALECTS: Record<string, Dialect> = {
 
 export const MOLT_DIALECTS = Object.keys(DIALECTS);
 
+/** Where each dialect actually lives. A charter may point a dialect elsewhere (a self-hosted clone), but `charter` lint says so out loud. */
+export const MOLT_KNOWN_HOSTS: Record<string, string> = {
+  "molt/moltbook": "www.moltbook.com",
+  "molt/clawk": "clawk.ai",
+  "molt/4claw": "www.4claw.org",
+};
+
 /** Validate a charter channel string for a dialect without any network. Used by `charter` lint. */
 export function moltChannelKind(kind: string, channel: string): "read" | "write" | "both" | null {
   const d = DIALECTS[kind];

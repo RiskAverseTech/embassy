@@ -307,6 +307,36 @@ test("a2a: an agent card that points its endpoint at another origin is refused",
   assert.equal((await a.check()).ok, false);
 });
 
+test("a2a: every origin-bypass variant of the card url is refused, and a peer-supplied task id is constrained", async () => {
+  const charter = charterFor("| peer | a2a | https://peer.example |", "| p.send | peer | send | speak | out | human-agent | — |\n| p.replies | peer | replies | listen | in | agent-human | — |");
+  for (const url of ["/rpc", "//exfil.example/rpc", "https://user:pw@peer.example/rpc", "https://peer.example:8443/rpc", "https://peer.example.evil/rpc", "http://peer.example/rpc", "https://xn--per-ooa.example/rpc", 42]) {
+    const { fetch } = fakeFetch([[/agent-card/, () => ({ body: { name: "P", url } })]]);
+    const a = new A2AAdapter({ platform: charter.platform("peer"), credentials: null, fetch });
+    if (url === 42) {
+      // non-string url falls back to the charter base, which is fine
+      assert.equal((await a.check()).ok, true);
+    } else {
+      const r = await a.check();
+      assert.equal(r.ok, false, `should refuse card url ${url}`);
+      assert.match(r.detail, /refused/);
+    }
+  }
+  // 3xx on the card fetch itself is refused
+  const { fetch: redirecting } = fakeFetch([[/agent-card/, () => ({ status: 302, body: {} })]]);
+  assert.equal((await new A2AAdapter({ platform: charter.platform("peer"), credentials: null, fetch: redirecting }).check()).ok, false);
+
+  // hostile task id never reaches the ledger ref
+  const hostile = "../../x\n{\"id\":\"forged\"}\u001b[31mRED";
+  const { fetch } = fakeFetch([
+    [/agent-card/, () => ({ body: { name: "P", url: "https://peer.example/rpc" } })],
+    [/\/rpc$/, (c) => ({ body: { jsonrpc: "2.0", id: c.body.id, result: { kind: "task", id: hostile, status: { state: "completed", message: { parts: [{ kind: "text", text: "ok" }] } } } } })],
+  ]);
+  const a = new A2AAdapter({ platform: charter.platform("peer"), credentials: null, fetch });
+  const d = await a.write(charter.resolve("p.send"), "", "q");
+  assert.match(d.id, /^[0-9a-f-]{36}$/, "fell back to our own messageId");
+  assert.equal(d.url.includes("\u001b"), false);
+});
+
 test("a2a: a JSON-RPC error is surfaced, and a plain Message result is read as the reply", async () => {
   const charter = charterFor("| peer | a2a | https://peer.example |", "| p.send | peer | send | speak | out | human-agent | — |\n| p.replies | peer | replies | listen | in | agent-human | — |");
   let fail = true;
@@ -325,6 +355,38 @@ test("a2a: a JSON-RPC error is surfaced, and a plain Message result is read as t
 // ---------------------------------------------------------------------------
 // discord
 // ---------------------------------------------------------------------------
+
+test("discord: a code fence cut by a chunk boundary is closed and reopened, so the footer never renders as code", () => {
+  const body = "Intro\n\n```ts\n" + "const x = 1;\n".repeat(200) + "```\n\nOutro\n\n---\n*Relayed by The Embassy · crossing `abc` · ledger #3 deadbeef0000*";
+  const parts = chunk(body);
+  assert.ok(parts.length >= 2);
+  for (const p of parts) {
+    assert.ok(p.length <= 2000, "within the limit after balancing");
+    const fences = (p.match(/^\s*```/gm) || []).length;
+    assert.equal(fences % 2, 0, `every chunk has balanced fences: ${fences}`);
+  }
+  const last = parts[parts.length - 1];
+  assert.match(last, /\*Relayed by The Embassy[^]*\*$/, "footer is last");
+  assert.equal(/```[^]*Relayed by The Embassy/.test(last.slice(last.lastIndexOf("```") + 3)), false, "footer is outside any fence");
+  assert.ok(parts[1].startsWith("```ts\n"), "the continuation reopens the fence with its language");
+});
+
+test("discord: ~~~ fences and 4-backtick fences are balanced with their own character and length; inline spans are not fences", () => {
+  const tilde = "Intro\n\n~~~\n" + "row\n".repeat(600) + "~~~\n\n---\n*Relayed by The Embassy · crossing `abc` · ledger #3 dead*";
+  const parts = chunk(tilde);
+  for (const p of parts) assert.equal(((p.match(/^~~~/gm) || []).length) % 2, 0, "tilde fences balanced");
+  assert.match(parts[parts.length - 1], /\*Relayed by The Embassy[^]*\*$/);
+  assert.equal(parts[parts.length - 1].includes("~~~\n\n---"), true, "footer follows the closing fence");
+
+  const four = "````md\n" + "x\n".repeat(1200) + "````\n\nfooter";
+  const p4 = chunk(four);
+  assert.ok(p4[1].startsWith("````md\n"), "reopened with four backticks and the info string");
+  assert.match(p4[0], /````\s*$/, "closed with four, not three");
+
+  const spans = ("```a``` inline\n" + "text\n".repeat(500)) + "\n---\n*Relayed by The Embassy · crossing `abc` · ledger #3 dead*";
+  const ps = chunk(spans);
+  assert.equal(ps.some((p) => /^```\s*$/m.test(p)), false, "no spurious closers were injected");
+});
 
 test("discord: chunking splits at paragraphs, never truncates, footer lands in the last chunk", () => {
   assert.deepEqual(chunk("short"), ["short"]);
@@ -378,6 +440,30 @@ test("discord: the base must be discord.com; a non-numeric channel is refused", 
 // ---------------------------------------------------------------------------
 // factory
 // ---------------------------------------------------------------------------
+
+test("console: inboxes are keyed by platform alias AND channel, so two console aliases with channel 'inbox' do not share a file", async () => {
+  const { ConsoleAdapter } = await import("./adapters/console");
+  const charter = charterFor("| local | console | — |", "| a.in | local | inbox | listen | in | human-agent | — |\n| b.in | console | inbox | listen | in | human-agent | — |");
+  ConsoleAdapter.queue(charter.resolve("a.in"), { author: "h", body: "for a" });
+  const a = new ConsoleAdapter({ platform: "local", quiet: true });
+  const b = new ConsoleAdapter({ platform: "console", quiet: true });
+  assert.equal((await a.read(charter.resolve("a.in"))).length, 1);
+  assert.equal((await b.read(charter.resolve("b.in"))).length, 0);
+});
+
+test("credentials: the legacy credentials.json is offered only to a 'moltbook' alias whose base really is www.moltbook.com", async () => {
+  const { loadCredentials } = await import("./credentials");
+  const dir = path.join(process.env.HOME!, ".config", "embassy");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.rmSync(path.join(dir, "credentials", "moltbook.json"), { force: true }); // a per-alias file always wins; remove the one an earlier test saved
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ api_key: "legacy-key" }));
+  assert.equal(loadCredentials("moltbook", "https://www.moltbook.com/api/v1")?.api_key, "legacy-key");
+  assert.equal(loadCredentials("moltbook", "https://www.moltbook.com.evil.tld/api/v1"), null);
+  assert.equal(loadCredentials("moltbook", null), null);
+  assert.equal(loadCredentials("clawk", "https://www.moltbook.com/api/v1"), null);
+  assert.throws(() => loadCredentials("../x"), /invalid platform id/);
+  fs.rmSync(path.join(dir, "credentials.json"));
+});
 
 test("the factory builds one adapter per platform row, keyed by alias, with the alias's credentials", () => {
   const charter = charterFor(
