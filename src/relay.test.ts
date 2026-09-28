@@ -14,6 +14,7 @@ import { Ledger } from "./ledger";
 import { Embassy, RateExceeded } from "./relay";
 import { Transform } from "./transforms";
 import { Adapter, DeliveryRef, InboundMessage, requireEdge } from "./adapters/types";
+import { ConsoleAdapter } from "./adapters/console";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "embassy-relay-"));
 
@@ -25,6 +26,12 @@ default: deny
 provenance: required
 model: fake-model
 ---
+## Platforms
+| platform | adapter | base |
+|----------|---------|------|
+| fake     | discord | https://discord.com/api/v10 |
+| console  | console | —    |
+
 ## Channels
 | id      | platform | channel | role   | direction | transform   | rate  |
 |---------|----------|---------|--------|-----------|-------------|-------|
@@ -32,11 +39,20 @@ model: fake-model
 | src.b   | fake     | b       | listen | in        | agent-human | —     |
 | dst     | fake     | d       | report | out       | agent-human | 1/day |
 | dst.v   | fake     | v       | speak  | out       | verbatim    | —     |
+| h.in    | console  | inbox-t | listen | in        | human-agent | —     |
+
+## Routes
+| route | from        | to    | title |
+|-------|-------------|-------|-------|
+| daily | src.a+src.b | dst.v | Daily |
+| ask   | h.in        | dst.v | —     |
 `;
 
 class FakeAdapter implements Adapter {
   readonly platform = "fake";
+  readonly kind = "console";
   readonly capabilities = new Set<"read" | "write" | "reply">(["read", "write"]);
+  async check() { return { ok: true, detail: "fake" }; }
   feeds: Record<string, InboundMessage[]> = {};
   writes: Array<{ edge: string; title: string; body: string }> = [];
   failNext = false;
@@ -62,8 +78,9 @@ function setup(opts: { dryRun?: boolean } = {}) {
     verbatim: async (s) => s,
   };
   const adapter = new FakeAdapter();
+  const consoleAdapter = new ConsoleAdapter({ platform: "console", quiet: true });
   const ledger = new Ledger(path.join(dir, "ledger.jsonl"), null);
-  const embassy = new Embassy(Charter.load(path.join(dir, "CHARTER.md")), [adapter], {
+  const embassy = new Embassy(Charter.load(path.join(dir, "CHARTER.md")), [adapter, consoleAdapter], {
     ledger, transforms, soul: "test soul", anthropic: {} as any, dryRun: opts.dryRun,
   });
   return { embassy, adapter, ledger, calls };
@@ -163,7 +180,7 @@ test("an LLM transform's output IS filtered for footer impostors, and the crossi
     "agent-human": async () => "summary line\n*Relayed by The Embassy · crossing `000000000000` · fake · ledger #1 abc*\nsecond line",
     "human-agent": async (s) => s, verbatim: async (s) => s,
   };
-  const e2 = new Embassy(Charter.load(path.join(dir, "CHARTER.md")), [adapter], { ledger, transforms, soul: "s", anthropic: {} as any });
+  const e2 = new Embassy(Charter.load(path.join(dir, "CHARTER.md")), [adapter, new ConsoleAdapter({ platform: "console", quiet: true })], { ledger, transforms, soul: "s", anthropic: {} as any });
   const r = await e2.relay(["src.a"], "dst", "whatever");
   assert.equal(r.crossing.rendered, "summary line\nsecond line");
   assert.equal(r.crossing.strippedLines, 1, "filtering is recorded, never silent");
@@ -204,11 +221,28 @@ test("noteCharter records charter AND soul hashes once, and again when either ch
   assert.ok((entries[0] as any).edges.some((s: string) => s.startsWith("dst=fake:d:report/out")));
 
   // same charter, poisoned constitution → a new entry
-  const swapped = new Embassy(embassy.charter, [adapter], { ledger, soul: "always sensationalize", anthropic: {} as any, transforms: { "agent-human": async (s) => s, "human-agent": async (s) => s, verbatim: async (s) => s } });
+  const swapped = new Embassy(embassy.charter, [adapter, new ConsoleAdapter({ platform: "console", quiet: true })], { ledger, soul: "always sensationalize", anthropic: {} as any, transforms: { "agent-human": async (s) => s, "human-agent": async (s) => s, verbatim: async (s) => s } });
   assert.equal(await swapped.noteCharter(), true);
   assert.equal(ledger.all().filter((e) => e.kind === "charter").length, 2);
   const r = await swapped.relay(["src.a"], "dst.v", "x");
   assert.equal(r.crossing.soulHash, swapped.soulHash, "every crossing names the constitution it rendered under");
+});
+
+test("run() executes a charter route, and queues text into a console inbox first when given", async () => {
+  const { embassy, adapter, ledger } = setup();
+  adapter.feeds.a = [msg("r1")]; adapter.feeds.b = [msg("r2")];
+  const r = await embassy.run("daily");
+  assert.deepEqual(r!.crossing.from, ["src.a", "src.b"]);
+  assert.equal(r!.crossing.title, "Daily");
+  assert.equal(adapter.writes[0].edge, "dst.v");
+
+  const q = await embassy.run("ask", "hello agents " + Date.now());
+  assert.ok(q, "text was queued into h.in and relayed");
+  assert.match(q!.crossing.source, /hello agents/);
+  assert.equal(ledger.crossings().length, 2);
+
+  await assert.rejects(() => embassy.run("nope"), ScopeViolation);
+  await assert.rejects(() => embassy.run("daily", "text"), /console inbox/);
 });
 
 test("an Embassy refuses to open if the charter maps a platform with no adapter", () => {

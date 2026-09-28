@@ -15,7 +15,8 @@ import { Ledger, GENESIS, sha } from "./ledger";
 import { getTransform, TRANSFORMS, UnknownTransform, stripFooterLines } from "./transforms";
 import { requireEdge, ForgedEdge } from "./adapters/types";
 import { ConsoleAdapter } from "./adapters/console";
-import { parseChannel } from "./adapters/moltbook";
+import { moltChannelKind } from "./adapters/molt";
+import { lintCharter, channelKind } from "./adapters/index";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "embassy-"));
 function charterFile(body: string): string {
@@ -33,6 +34,12 @@ provenance: required
 ---
 
 # Test charter
+
+## Platforms
+
+| platform | adapter | base |
+|----------|---------|------|
+| console  | console | —    |
 
 ## Channels
 
@@ -257,11 +264,106 @@ test("the footer filter is a denylist and WILL over-match some prose — which i
 // ---------------------------------------------------------------------------
 
 test("moltbook channels must be a feed or a submolt — not an arbitrary endpoint", () => {
-  assert.deepEqual(parseChannel("posts?sort=hot"), { kind: "feed", sort: "hot" });
-  assert.deepEqual(parseChannel("m/general"), { kind: "submolt", name: "general" });
-  assert.throws(() => parseChannel("agents/status"), /not addressable/);
-  assert.throws(() => parseChannel("posts?sort=hot&limit=999"), /not addressable/);
-  assert.throws(() => parseChannel("m/../admin"), /not addressable/);
+  assert.equal(moltChannelKind("molt/moltbook", "posts?sort=hot"), "read");
+  assert.equal(moltChannelKind("molt/moltbook", "m/general"), "both");
+  assert.equal(moltChannelKind("molt/moltbook", "agents/status"), null);
+  assert.equal(moltChannelKind("molt/moltbook", "posts?sort=hot&limit=999"), null);
+  assert.equal(moltChannelKind("molt/moltbook", "m/../admin"), null);
+  assert.equal(moltChannelKind("molt/clawk", "clawks"), "write");
+  assert.equal(moltChannelKind("molt/clawk", "explore?sort=recent"), "read");
+  assert.equal(moltChannelKind("molt/4claw", "boards/ai"), "both");
+  assert.equal(moltChannelKind("molt/nope", "x"), null);
+  assert.equal(channelKind("a2a", "send"), "write");
+  assert.equal(channelKind("a2a", "replies"), "read");
+  assert.equal(channelKind("a2a", "anything"), null);
+  assert.equal(channelKind("discord", "123456789012345678"), "both");
+  assert.equal(channelKind("discord", "general"), null);
+  assert.equal(channelKind("agent4science", "takes?stance=skeptical"), "write");
+  assert.equal(channelKind("agent4science", "feed?type=takes"), "read");
+});
+
+// ---------------------------------------------------------------------------
+// Platforms and Routes
+// ---------------------------------------------------------------------------
+
+const MULTI = `---
+embassy: t
+version: 2.0
+scope: t
+default: deny
+---
+## Platforms
+| platform | adapter       | base                            |
+|----------|---------------|---------------------------------|
+| moltbook | molt/moltbook | https://www.moltbook.com/api/v1 |
+| clawk    | molt/clawk    | https://clawk.ai/api/v1         |
+| console  | console       | —                               |
+
+## Channels
+| id         | platform | channel        | role   | direction | transform   | rate  |
+|------------|----------|----------------|--------|-----------|-------------|-------|
+| m.hot      | moltbook | posts?sort=hot | listen | in        | agent-human | —     |
+| c.post     | clawk    | clawks         | speak  | out       | human-agent | 6/day |
+| h.out      | console  | bulletin       | report | out       | agent-human | —     |
+| h.in       | console  | inbox          | listen | in        | human-agent | —     |
+
+## Routes
+| route    | from  | to     | title |
+|----------|-------|--------|-------|
+| bulletin | m.hot | h.out  | Daily |
+| ask      | h.in  | c.post | —     |
+`;
+
+test("platforms bind aliases to adapters and base URLs; channels must name a declared platform", () => {
+  const charter = Charter.load(charterFile(MULTI));
+  assert.deepEqual(charter.platforms().map((p) => p.id), ["moltbook", "clawk", "console"]);
+  assert.equal(charter.platform("clawk").adapter, "molt/clawk");
+  assert.equal(charter.platform("clawk").base, "https://clawk.ai/api/v1");
+  assert.throws(() => charter.platform("nope"), CharterError);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| m.hot      | moltbook", "| m.hot      | ghost   "))), /not in the Platforms table/);
+});
+
+test("a platform base must be https, and a non-console platform must have one", () => {
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("https://clawk.ai/api/v1", "http://clawk.ai/api/v1"))), /https/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("https://clawk.ai/api/v1", "—"))), /needs a base URL/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("molt/clawk", "molt/unknown"))), /known:/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| clawk    | molt/clawk", "| moltbook | molt/clawk"))), /declared twice/);
+});
+
+test("routes are validated against the wall at load time", () => {
+  const charter = Charter.load(charterFile(MULTI));
+  assert.deepEqual(charter.route("bulletin").from, ["m.hot"]);
+  assert.equal(charter.route("ask").to, "c.post");
+  assert.equal(charter.route("ask").title, "");
+  assert.throws(() => charter.route("nope"), ScopeViolation);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| bulletin | m.hot | h.out", "| bulletin | c.post | h.out"))), /cannot be read/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| bulletin | m.hot | h.out", "| bulletin | m.hot | h.in"))), /cannot be written/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| bulletin | m.hot | h.out", "| bulletin | m.hot | ghost"))), /not a channel/);
+  assert.throws(() => Charter.load(charterFile(MULTI.replace("| ask      | h.in  | c.post", "| ask      | h.in+h.out | h.out"))), /both source and destination|cannot be read/);
+});
+
+test("a charter without a Routes section is valid; run() then has nothing to run", () => {
+  const noRoutes = MULTI.slice(0, MULTI.indexOf("## Routes"));
+  const charter = Charter.load(charterFile(noRoutes));
+  assert.deepEqual(charter.routes(), []);
+});
+
+test("lint catches a channel that parses for the wrong direction", () => {
+  const charter = Charter.load(charterFile(MULTI));
+  assert.deepEqual(lintCharter(charter), []);
+  const bad = Charter.load(charterFile(MULTI.replace("| c.post     | clawk    | clawks         | speak  | out", "| c.post     | clawk    | clawks         | both   | both")));
+  assert.match(lintCharter(bad)[0], /write-only.*readable/);
+});
+
+test("every example charter parses and lints clean", () => {
+  const dir = path.join(__dirname, "..", "examples");
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "README.md");
+  assert.ok(files.length >= 6);
+  for (const f of files) {
+    const charter = Charter.load(path.join(dir, f));
+    assert.deepEqual(lintCharter(charter), [], `${f} lints clean`);
+    assert.ok(charter.routes().length >= 1, `${f} has routes`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -421,7 +523,7 @@ test("deliveredSources excludes crossings whose delivery failed", () => {
 test("the shipped charter is valid", () => {
   const charter = Charter.load(path.join(__dirname, "..", "CHARTER.md"));
   assert.equal(charter.meta.default, "deny");
-  assert.equal(charter.list().length, 6);
-  for (const e of charter.list()) assert.ok(TRANSFORMS[e.transform]);
-  for (const e of charter.list().filter((e) => e.platform === "moltbook")) assert.doesNotThrow(() => parseChannel(e.channel));
+  assert.equal(charter.list().length, 5);
+  assert.deepEqual(charter.routes().map((r) => r.id), ["bulletin", "ask"]);
+  assert.deepEqual(lintCharter(charter), []);
 });

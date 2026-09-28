@@ -14,7 +14,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { Edge } from "../charter";
-import { Adapter, AdapterError, DeliveryRef, InboundMessage, requireEdge } from "./types";
+import { Adapter, AdapterContext, AdapterError, CheckResult, DeliveryRef, InboundMessage, requireEdge } from "./types";
 
 const DIR = path.join(os.homedir(), ".config", "embassy");
 const OUTBOX = path.join(DIR, "outbox");
@@ -26,13 +26,23 @@ function inboxFor(channel: string): string {
   return path.join(DIR, `inbox.${channel.replace(/^@/, "")}.jsonl`);
 }
 
+export function consoleChannelKind(channel: string): "both" | null {
+  return CHANNEL.test(channel) ? "both" : null;
+}
+
 export class ConsoleAdapter implements Adapter {
-  readonly platform = "console";
+  readonly platform: string;
+  readonly kind = "console";
   readonly capabilities = new Set<"read" | "write" | "reply">(["read", "write"]);
   #quiet: boolean;
 
-  constructor(opts: { quiet?: boolean } = {}) {
-    this.#quiet = opts.quiet ?? false;
+  constructor(ctx: AdapterContext | { platform?: string; quiet?: boolean } = {}) {
+    this.platform = "platform" in ctx && ctx.platform && typeof ctx.platform === "object" ? ctx.platform.id : (ctx as any).platform ?? "console";
+    this.#quiet = (ctx as any).quiet ?? false;
+  }
+
+  async check(): Promise<CheckResult> {
+    return { ok: true, detail: `outbox ${OUTBOX}` };
   }
 
   async read(edge: Edge, limit: number = 25): Promise<InboundMessage[]> {
@@ -70,7 +80,7 @@ export class ConsoleAdapter implements Adapter {
 
   /** Drop a human message into a console edge's inbox for the next relay. */
   static queue(edge: Edge, message: { author: string; body: string }): InboundMessage {
-    requireEdge(edge, "console");
+    if (!Edge.is(edge)) throw new AdapterError("queue() needs a charter-minted Edge");
     fs.mkdirSync(DIR, { recursive: true });
     const entry: InboundMessage = {
       id: `human-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,

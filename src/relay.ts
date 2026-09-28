@@ -108,8 +108,11 @@ export class Embassy {
     return adapter;
   }
 
-  #ctx(): TransformContext {
-    return { soul: this.#soul, model: this.#charter.meta.model, anthropic: this.#anthropic };
+  #ctx(to?: Edge): TransformContext {
+    const limit = to ? (this.#adapterFor(to) as Adapter & { maxBody?: number | null }).maxBody ?? undefined : undefined;
+    // Leave room for the provenance footer (~160 chars) when a limit applies.
+    const maxChars = typeof limit === "number" ? Math.max(80, limit - (this.#charter.meta.provenance === "required" ? 170 : 0)) : undefined;
+    return { soul: this.#soul, model: this.#charter.meta.model, anthropic: this.#anthropic, maxChars };
   }
 
   /** Serialize crossings within this process; the file lock serializes across processes. */
@@ -150,7 +153,7 @@ export class Embassy {
         // the OUTPUT of an LLM transform is filtered for footer impostors
         // (a model can echo one), and the count is recorded so the filtering
         // is never silent. `verbatim` is delivered exactly as received.
-        const raw = (await render(source, this.#ctx())).trim();
+        const raw = (await render(source, this.#ctx(to))).trim();
         const rendered = transform === "verbatim" ? raw : stripFooterLines(raw);
         const strippedLines = transform === "verbatim" ? 0 : raw.split("\n").length - rendered.split("\n").length;
         if (!rendered) throw new Error(`transform '${transform}' produced nothing for ${fromIds.join("+")} → ${to.id}`);
@@ -201,6 +204,24 @@ export class Embassy {
     if (this.ledger.deliveryOf(id)) throw new Error(`crossing '${id}' was already delivered`);
     const to = this.#charter.assertWritable(crossing.to);
     return this.#serial(() => this.ledger.withLock(() => this.#deliver(crossing, to)));
+  }
+
+  /**
+   * Run a named route from the charter. If `text` is given and the route's
+   * first source is a console inbox, the text is queued there first — this
+   * is how a human question enters: `embassy run ask "…"`.
+   */
+  async run(routeId: string, text?: string): Promise<RelayResult | null> {
+    const route = this.#charter.route(routeId);
+    if (text) {
+      const first = this.#charter.assertReadable(route.from[0]);
+      if (this.#charter.platform(first.platform).adapter !== "console") {
+        throw new ScopeViolation(`route '${routeId}' does not start at a console inbox; text can only be queued into console edges`);
+      }
+      const { ConsoleAdapter } = await import("./adapters/console");
+      ConsoleAdapter.queue(first, { author: "human", body: text });
+    }
+    return this.sweep([...route.from], route.to, route.title);
   }
 
   /**

@@ -36,6 +36,33 @@ export interface CharterMeta {
   endpoint: string | null;
 }
 
+/** A platform alias bound to an adapter kind and (usually) a base URL. */
+export interface Platform {
+  readonly id: string;
+  readonly adapter: string;
+  readonly base: string | null;
+}
+
+/** A named crossing: which edges feed which destination, under what title. */
+export interface Route {
+  readonly id: string;
+  readonly from: readonly string[];
+  readonly to: string;
+  readonly title: string;
+}
+
+/** Adapter kinds the charter may name. The factory in adapters/index.ts must agree. */
+export const ADAPTER_KINDS = [
+  "console",
+  "molt/moltbook",
+  "molt/clawk",
+  "molt/4claw",
+  "agent4science",
+  "a2a",
+  "discord",
+] as const;
+export type AdapterKind = (typeof ADAPTER_KINDS)[number];
+
 /**
  * Raised whenever something asks the Embassy to act outside the charter.
  * This is never caught and turned into a warning. A scope violation stops
@@ -211,18 +238,19 @@ function parseRate(cell: string): RateLimit | null {
 }
 
 /**
- * Only the table directly under the `## Channels` heading is read. Rows in
- * prose, in other sections, or inside fenced code blocks are not edges. A
- * second `## Channels` heading is an error rather than a merge.
+ * Sections. Only the first table directly under a recognized `## Heading` is
+ * read; rows in prose, in other sections, or inside fenced code blocks or
+ * HTML comments are not data. A duplicate heading is an error, not a merge.
  */
-function extractChannelsSection(text: string): string {
+function extractSection(text: string, heading: string, required: boolean): string | null {
   const lines = text.split("\n");
+  const re = new RegExp(`^##\\s+${heading}\\s*$`, "i");
   let start = -1;
   let end = lines.length;
   let count = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    if (/^##\s+Channels\s*$/i.test(lines[i])) {
+    if (re.test(lines[i])) {
       count++;
       if (start < 0) start = i + 1;
     } else if (start >= 0 && end === lines.length && /^#{1,6}\s/.test(lines[i])) {
@@ -230,17 +258,18 @@ function extractChannelsSection(text: string): string {
     }
   }
 
-  if (count === 0) throw new CharterError("charter has no '## Channels' section");
-  if (count > 1) throw new CharterError("charter has more than one '## Channels' section");
+  if (count === 0) {
+    if (required) throw new CharterError(`charter has no '## ${heading}' section`);
+    return null;
+  }
+  if (count > 1) throw new CharterError(`charter has more than one '## ${heading}' section`);
 
   // A comment opened inside a table row could splice rows together. Refuse.
   for (const line of lines.slice(start, end)) {
     if (line.trim().startsWith("|") && /<!--|-->/.test(line)) {
-      throw new CharterError(`HTML comment markers are not allowed inside a channels row: ${line.trim()}`);
+      throw new CharterError(`HTML comment markers are not allowed inside a ${heading.toLowerCase()} row: ${line.trim()}`);
     }
   }
-  // Strip fenced code and HTML comments from the section so an example row —
-  // or a row hidden from rendered view inside <!-- --> — is not an edge.
   const section = lines.slice(start, end).join("\n").replace(/<!--[\s\S]*?-->/g, "");
   const kept: string[] = [];
   let fenced = false;
@@ -251,9 +280,9 @@ function extractChannelsSection(text: string): string {
   return kept.join("\n");
 }
 
-function parseTable(section: string): Edge[] {
-  const edges: Edge[] = [];
-  const seen = new Set<string>();
+/** The first pipe table in a section, as rows of cells. Header must match exactly. */
+function readTable(section: string, heading: string, expected: string[]): string[][] {
+  const rows: string[][] = [];
   let headerSeen = false;
 
   for (const line of section.split("\n")) {
@@ -262,65 +291,98 @@ function parseTable(section: string): Edge[] {
       if (headerSeen && trimmed) break; // any other content ends the table
       continue;
     }
-
     const cells = trimmed.split("|").slice(1, -1).map((c) => c.trim());
 
     if (!headerSeen) {
-      const header = cells.map((c) => c.toLowerCase());
-      const expected = ["id", "platform", "channel", "role", "direction", "transform", "rate"];
-      if (header.join(",") !== expected.join(",")) {
-        throw new CharterError(
-          `channels table header must be exactly: ${expected.join(" | ")}`
-        );
+      if (cells.map((c) => c.toLowerCase()).join(",") !== expected.join(",")) {
+        throw new CharterError(`${heading} table header must be exactly: ${expected.join(" | ")}`);
       }
       headerSeen = true;
       continue;
     }
-
     if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue; // separator
+    if (cells.length !== expected.length) {
+      throw new CharterError(`${heading} row has ${cells.length} cells, expected ${expected.length}: ${trimmed}`);
+    }
+    rows.push(cells);
+  }
 
-    if (cells.length !== 7) {
-      throw new CharterError(`channels row has ${cells.length} cells, expected 7: ${trimmed}`);
-    }
+  if (!headerSeen) throw new CharterError(`'## ${heading}' section contains no table`);
+  return rows;
+}
 
-    const [id, platform, channel, role, direction, transform, rate] = cells;
+const ID = /^[a-z][a-z0-9]*(\.[a-z0-9]+)*$/;
+const EMPTY = (s: string) => !s || s === "—" || s === "-";
 
-    if (!/^[a-z][a-z0-9]*(\.[a-z0-9]+)*$/.test(id)) {
-      throw new CharterError(`edge id '${id}' must be dotted lowercase (e.g. agent.hot)`);
+function parsePlatforms(section: string): Platform[] {
+  const out: Platform[] = [];
+  const seen = new Set<string>();
+  for (const [id, adapter, base] of readTable(section, "Platforms", ["platform", "adapter", "base"])) {
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) throw new CharterError(`platform '${id}' must be lowercase (e.g. moltbook, clawk)`);
+    if (!(ADAPTER_KINDS as readonly string[]).includes(adapter)) {
+      throw new CharterError(`platform '${id}' names adapter '${adapter}' — known: ${ADAPTER_KINDS.join(", ")}`);
     }
-    if (!ROLES.includes(role as Role)) {
-      throw new CharterError(`edge '${id}' has role '${role}' — must be one of ${ROLES.join(", ")}`);
+    const url = EMPTY(base) ? null : base;
+    if (url && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(url)) {
+      throw new CharterError(`platform '${id}' base must be an https:// URL (got '${base}')`);
     }
-    if (!DIRECTIONS.includes(direction as Direction)) {
-      throw new CharterError(`edge '${id}' has direction '${direction}' — must be one of ${DIRECTIONS.join(", ")}`);
+    if (adapter !== "console" && !url) throw new CharterError(`platform '${id}' (${adapter}) needs a base URL`);
+    if (seen.has(id)) throw new CharterError(`platform '${id}' is declared twice`);
+    seen.add(id);
+    out.push(Object.freeze({ id, adapter, base: url }));
+  }
+  if (!out.length) throw new CharterError("charter declares no platforms");
+  return out;
+}
+
+function parseChannels(section: string, platforms: Map<string, Platform>): Edge[] {
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  const header = ["id", "platform", "channel", "role", "direction", "transform", "rate"];
+
+  for (const [id, platform, channel, role, direction, transform, rate] of readTable(section, "Channels", header)) {
+    if (!ID.test(id)) throw new CharterError(`edge id '${id}' must be dotted lowercase (e.g. agent.hot)`);
+    if (!platforms.has(platform)) {
+      throw new CharterError(`edge '${id}' names platform '${platform}', which is not in the Platforms table`);
     }
+    if (!ROLES.includes(role as Role)) throw new CharterError(`edge '${id}' has role '${role}' — must be one of ${ROLES.join(", ")}`);
+    if (!DIRECTIONS.includes(direction as Direction)) throw new CharterError(`edge '${id}' has direction '${direction}' — must be one of ${DIRECTIONS.join(", ")}`);
     if (!TRANSFORMS[transform]) {
-      throw new CharterError(
-        `edge '${id}' declares transform '${transform}', which is not registered — known: ${Object.keys(TRANSFORMS).join(", ")}`
-      );
+      throw new CharterError(`edge '${id}' declares transform '${transform}', which is not registered — known: ${Object.keys(TRANSFORMS).join(", ")}`);
     }
     if (seen.has(id)) throw new CharterError(`edge '${id}' is declared twice`);
     seen.add(id);
-
-    edges.push(
-      mintEdge({
-        id,
-        platform,
-        channel,
-        role: role as Role,
-        direction: direction as Direction,
-        transform,
-        rate: parseRate(rate),
-      })
-    );
+    edges.push(mintEdge({ id, platform, channel, role: role as Role, direction: direction as Direction, transform, rate: parseRate(rate) }));
   }
 
-  if (!headerSeen) throw new CharterError("'## Channels' section contains no table");
   if (!edges.length) throw new CharterError("charter declares no channels");
   if (!edges.some((e) => e.readable)) throw new CharterError("charter has no readable edge — nothing can come in");
   if (!edges.some((e) => e.writable)) throw new CharterError("charter has no writable edge — nothing can go out");
-
   return edges;
+}
+
+function parseRoutes(section: string | null, edges: Map<string, Edge>): Route[] {
+  if (section === null) return [];
+  const out: Route[] = [];
+  const seen = new Set<string>();
+  for (const [id, from, to, title] of readTable(section, "Routes", ["route", "from", "to", "title"])) {
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) throw new CharterError(`route '${id}' must be lowercase (e.g. bulletin)`);
+    const fromIds = from.split("+").map((s) => s.trim()).filter(Boolean);
+    if (!fromIds.length) throw new CharterError(`route '${id}' has no source edges`);
+    for (const f of fromIds) {
+      const e = edges.get(f);
+      if (!e) throw new CharterError(`route '${id}' reads from '${f}', which is not a channel`);
+      if (!e.readable) throw new CharterError(`route '${id}' reads from '${f}', which cannot be read`);
+    }
+    const dest = edges.get(to);
+    if (!dest) throw new CharterError(`route '${id}' writes to '${to}', which is not a channel`);
+    if (!dest.writable) throw new CharterError(`route '${id}' writes to '${to}', which cannot be written`);
+    if (fromIds.includes(to)) throw new CharterError(`route '${id}' has '${to}' as both source and destination`);
+    if (seen.has(id)) throw new CharterError(`route '${id}' is declared twice`);
+    seen.add(id);
+    out.push(Object.freeze({ id, from: Object.freeze(fromIds), to, title: EMPTY(title) ? "" : title }));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,11 +393,15 @@ export class Charter {
   readonly meta: CharterMeta;
   readonly sourcePath: string;
   readonly hash: string;
+  readonly #platforms: ReadonlyMap<string, Platform>;
   readonly #edges: ReadonlyMap<string, Edge>;
+  readonly #routes: ReadonlyMap<string, Route>;
 
-  private constructor(meta: CharterMeta, edges: Edge[], sourcePath: string, hash: string) {
+  private constructor(meta: CharterMeta, platforms: Platform[], edges: Edge[], routes: Route[], sourcePath: string, hash: string) {
     this.meta = meta;
+    this.#platforms = new Map(platforms.map((p) => [p.id, p]));
     this.#edges = new Map(edges.map((e) => [e.id, e]));
+    this.#routes = new Map(routes.map((r) => [r.id, r]));
     this.sourcePath = sourcePath;
     this.hash = hash;
     Object.freeze(this);
@@ -348,9 +414,12 @@ export class Charter {
     }
     const text = fs.readFileSync(file, "utf-8");
     const meta = parseFrontmatter(text);
-    const edges = parseTable(extractChannelsSection(text));
+    const platforms = parsePlatforms(extractSection(text, "Platforms", true)!);
+    const platformMap = new Map(platforms.map((p) => [p.id, p]));
+    const edges = parseChannels(extractSection(text, "Channels", true)!, platformMap);
+    const routes = parseRoutes(extractSection(text, "Routes", false), new Map(edges.map((e) => [e.id, e])));
     const hash = crypto.createHash("sha256").update(text).digest("hex");
-    return new Charter(meta, edges, file, hash);
+    return new Charter(meta, platforms, edges, routes, file, hash);
   }
 
   /** Re-read the same file. There is no path to load a different one from a running Charter. */
@@ -360,6 +429,26 @@ export class Charter {
 
   list(): Edge[] {
     return [...this.#edges.values()];
+  }
+
+  platforms(): Platform[] {
+    return [...this.#platforms.values()];
+  }
+
+  platform(id: string): Platform {
+    const p = this.#platforms.get(id);
+    if (!p) throw new CharterError(`platform '${id}' is not in the charter`);
+    return p;
+  }
+
+  routes(): Route[] {
+    return [...this.#routes.values()];
+  }
+
+  route(id: string): Route {
+    const r = this.#routes.get(id);
+    if (!r) throw new ScopeViolation(`'${id}' is not a route in the charter — known: ${[...this.#routes.keys()].join(", ") || "none"}`);
+    return r;
   }
 
   /**
