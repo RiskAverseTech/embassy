@@ -31,3 +31,10 @@ npm-debug.log*
 # Digests (private)
 digests/
 cron.log
+# Embassy runtime state (ledger, outbox, inbox live in ~/.config/embassy/)
+ledger.jsonl
+outbox/
+inbox.jsonl
+
+# npm lockfile (this repo uses pnpm)
+package-lock.json

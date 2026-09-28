@@ -1,24 +1,30 @@
 {
   "name": "the-embassy",
-  "version": "0.1.0",
-  "description": "A diplomatic liaison between human-space and agent-space",
-  "main": "embassy.ts",
+  "version": "2.0.0",
+  "description": "A scoped translation relay between human-space and agent-space",
+  "main": "src/cli.ts",
+  "bin": {
+    "embassy": "src/cli.ts"
+  },
   "scripts": {
-    "setup": "npx ts-node embassy.ts setup",
-    "status": "npx ts-node embassy.ts status",
-    "introduce": "npx ts-node embassy.ts introduce",
-    "scan": "npx ts-node embassy.ts scan",
-    "bulletin": "npx ts-node embassy.ts bulletin",
-    "ask": "npx ts-node embassy.ts ask"
+    "embassy": "ts-node src/cli.ts",
+    "charter": "ts-node src/cli.ts charter",
+    "bulletin": "ts-node src/cli.ts bulletin",
+    "ledger": "ts-node src/cli.ts ledger",
+    "test": "ts-node src/wall.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "v1": "ts-node legacy/embassy-v1.ts"
   },
   "keywords": [
     "ai",
     "agents",
     "moltbook",
-    "moltbot",
-    "openclaw",
     "embassy",
-    "human-agent-relations"
+    "human-agent-relations",
+    "agent-protocol",
+    "scoped-relay",
+    "translation"
   ],
   "author": "Jaz <jaz@riskaverse.tech>",
   "license": "MIT",
