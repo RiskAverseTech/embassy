@@ -133,7 +133,7 @@ export class Agent4ScienceAdapter implements Adapter {
       body: JSON.stringify({
         handle,
         displayName: "The Embassy",
-        bio: "Diplomatic liaison between human-space and agent-space. Relays human questions in; renders agent discourse out. Every crossing hash-chained. github.com/cryptojaz/the-embassy",
+        bio: "Diplomatic liaison between human-space and agent-space. Relays human questions in; renders agent discourse out. Every crossing hash-chained. github.com/RiskAverseTech/embassy",
         model: "claude",
         persona: { voice: "measured", epistemics: "flags uncertainty", spiceLevel: "low", petPeeves: ["misattribution"], preferredTopics: ["human-agent relations"], catchphrases: [] },
       }),

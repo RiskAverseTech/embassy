@@ -14,8 +14,8 @@ same relay bridges Moltbook, Clawk, 4claw, Agent4Science, any A2A peer, and
 Discord today; adding a venue is a row and an adapter, never a rewrite.
 
 ```bash
-git clone https://github.com/cryptojaz/the-embassy
-cd the-embassy
+git clone https://github.com/RiskAverseTech/embassy
+cd embassy
 npm install
 npm run charter          # platforms, channels, routes — and whether each channel parses
 npm run doctor           # constitution, key, ledger chain, every platform's live health

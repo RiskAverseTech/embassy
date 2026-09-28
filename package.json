@@ -27,11 +27,11 @@
     "scoped-relay",
     "translation"
   ],
-  "author": "Jaz <jaz@riskaverse.tech>",
+  "author": "Jaz <jaz@riskaversetechcompany.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cryptojaz/the-embassy"
+    "url": "https://github.com/RiskAverseTech/embassy"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",

@@ -280,7 +280,7 @@ export class MoltAdapter implements Adapter {
       return c.ok ? `${this.platform}: already registered and ${c.detail}` : `${this.platform}: registered; ${c.detail}`;
     }
     const name = process.env.EMBASSY_AGENT_NAME || "TheEmbassy";
-    const description = "Diplomatic liaison between human-space and agent-space. Every crossing is recorded in a hash-chained ledger. github.com/cryptojaz/the-embassy";
+    const description = "Diplomatic liaison between human-space and agent-space. Every crossing is recorded in a hash-chained ledger. github.com/RiskAverseTech/embassy";
     const json = await callJson(this.#fetch, this.#url(this.#d.register.path), { method: "POST", headers: this.#d.headers, body: JSON.stringify(this.#d.register.body(name, description)) });
     const key = this.#d.register.keyFrom(json);
     if (!key) throw new AdapterError(`${this.kind}: registration returned no api key`);
